@@ -1,0 +1,88 @@
+version: "3.8"
+
+services:
+{% for svc in model.services %}
+  {{ svc.name }}:
+{% if svc.type in ("database", "cache") %}
+    image: {{ svc.image }}
+{% else %}
+    build:
+      context: .
+      dockerfile: Dockerfile.{{ svc.name }}
+{% endif %}
+{% if svc.ports %}
+    ports:
+{% for port in svc.ports %}
+      - "{{ port.host }}:{{ port.container }}"
+{% endfor %}
+{% endif %}
+{% if svc.depends_on %}
+    depends_on:
+{% for dep in svc.depends_on %}
+      - {{ dep }}
+{% endfor %}
+{% endif %}
+{% if svc.env %}
+    environment:
+{% for env_name, env_var in svc.env.items() %}
+{% if env_var.kind == "literal" %}
+      {{ env_name }}: "{{ env_var.value }}"
+{% elif env_var.kind == "ref" %}
+      {{ env_name }}: "${{'{'}}{{ env_var.ref }}{{'}'}}"
+{% elif env_var.kind == "secret" %}
+      {{ env_name }}: "${{'{'}}{{ env_var.ref }}{{'}'}}"
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if svc.volumes %}
+    volumes:
+{% for vol in svc.volumes %}
+      - {{ vol.name }}:{{ vol.mount_path }}
+{% endfor %}
+{% endif %}
+{% if svc.env %}
+{% set has_secrets = [] %}
+{% for env_name, env_var in svc.env.items() %}
+{% if env_var.kind == "secret" %}
+{% if has_secrets.append(1) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% if has_secrets %}
+    secrets:
+{% for env_name, env_var in svc.env.items() %}
+{% if env_var.kind == "secret" %}
+      - {{ env_var.ref }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% endfor %}
+{% set all_volumes = [] %}
+{% for svc in model.services %}
+{% for vol in svc.volumes %}
+{% if all_volumes.append(vol.name) %}{% endif %}
+{% endfor %}
+{% endfor %}
+{% if all_volumes %}
+volumes:
+{% for vol_name in all_volumes %}
+  {{ vol_name }}:
+{% endfor %}
+{% endif %}
+
+{% set all_secrets = [] %}
+{% for svc in model.services %}
+{% for env_name, env_var in svc.env.items() %}
+{% if env_var.kind == "secret" %}
+{% if all_secrets.append(env_var.ref) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% if all_secrets %}
+secrets:
+{% for secret_name in all_secrets %}
+  {{ secret_name }}:
+    external: true
+{% endfor %}
+{% endif %}

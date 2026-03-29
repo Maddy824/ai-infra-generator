@@ -1,0 +1,104 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Auto-generated dashboard for {{ model.project_name }}",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+{% for svc in app_services %}
+    {
+      "title": "{{ svc.name }} — CPU Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": {{ loop.index0 * 16 }} },
+      "targets": [
+        {
+          "expr": "rate(container_cpu_usage_seconds_total{container=\"{{ svc.name }}\"}[5m]) * 100",
+          "legendFormat": "{% raw %}{{pod}}{% endraw %}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": {{ thresholds.cpu_percent * 0.7 }} },
+              { "color": "red", "value": {{ thresholds.cpu_percent }} }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "{{ svc.name }} — Memory Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": {{ loop.index0 * 16 }} },
+      "targets": [
+        {
+          "expr": "container_memory_usage_bytes{container=\"{{ svc.name }}\"}",
+          "legendFormat": "{% raw %}{{pod}}{% endraw %}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "{{ svc.name }} — Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": {{ loop.index0 * 16 + 8 }} },
+      "targets": [
+        {
+          "expr": "rate(http_requests_total{container=\"{{ svc.name }}\"}[5m])",
+          "legendFormat": "{% raw %}{{code}}{% endraw %}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "title": "{{ svc.name }} — p99 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": {{ loop.index0 * 16 + 8 }} },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{container=\"{{ svc.name }}\"}[5m])) * 1000",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": {{ thresholds.p99_latency_ms }} }
+            ]
+          }
+        }
+      }
+    }{{ "," if not loop.last else "" }}
+{% endfor %}
+  ],
+  "schemaVersion": 39,
+  "title": "{{ model.project_name }} Overview",
+  "uid": "{{ model.project_name }}-overview"
+}

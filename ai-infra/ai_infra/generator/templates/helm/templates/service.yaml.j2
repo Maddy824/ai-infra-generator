@@ -1,0 +1,22 @@
+{{ '{{' }} range $svcName, $svc := .Values {{ '}}' }}
+{{ '{{' }} if and (kindIs "map" $svc) (index $svc "enabled") (index $svc "service") {{ '}}' }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ '{{' }} $svcName {{ '}}' }}
+  labels:
+    app: {{ '{{' }} $svcName {{ '}}' }}
+    chart: {{ '{{' }} $.Chart.Name {{ '}}' }}-{{ '{{' }} $.Chart.Version {{ '}}' }}
+spec:
+  type: {{ '{{' }} $svc.service.type | default "ClusterIP" {{ '}}' }}
+  selector:
+    app: {{ '{{' }} $svcName {{ '}}' }}
+  ports:
+    {{ '{{' }} range $svc.service.ports {{ '}}' }}
+    - port: {{ '{{' }} .port {{ '}}' }}
+      targetPort: {{ '{{' }} .targetPort {{ '}}' }}
+      protocol: {{ '{{' }} .protocol | default "TCP" {{ '}}' }}
+    {{ '{{' }} end {{ '}}' }}
+{{ '{{' }} end {{ '}}' }}
+{{ '{{' }} end {{ '}}' }}
+---

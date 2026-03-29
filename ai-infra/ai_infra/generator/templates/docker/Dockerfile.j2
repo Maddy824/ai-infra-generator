@@ -1,0 +1,84 @@
+{% if "python" in svc.image %}
+# ---------- Python: builder stage ----------
+FROM {{ svc.image }} AS builder
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+COPY requirements.txt* pyproject.toml* ./
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true
+
+# ---------- Python: runtime stage ----------
+FROM {{ svc.image }}
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python*/site-packages /usr/local/lib/python*/site-packages/
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY . .
+{% elif "node" in svc.image %}
+# ---------- Node.js: builder stage ----------
+FROM {{ svc.image }} AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --production
+
+# ---------- Node.js: runtime stage ----------
+FROM {{ svc.image }}
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY . .
+{% elif "golang" in svc.image or "go" in svc.image %}
+# ---------- Go: builder stage ----------
+FROM {{ svc.image }} AS builder
+
+WORKDIR /app
+
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
+
+# ---------- Go: runtime stage ----------
+FROM gcr.io/distroless/static-debian12
+
+COPY --from=builder /app/server /server
+{% elif "maven" in svc.image or "gradle" in svc.image or "openjdk" in svc.image or "eclipse-temurin" in svc.image %}
+# ---------- Java: builder stage ----------
+FROM {{ svc.image }} AS builder
+
+WORKDIR /app
+
+COPY pom.xml build.gradle* settings.gradle* ./
+COPY src ./src
+RUN if [ -f pom.xml ]; then mvn -B package -DskipTests; \
+    elif [ -f build.gradle ]; then gradle build -x test; fi
+
+# ---------- Java: runtime stage ----------
+FROM eclipse-temurin:21-jre
+
+WORKDIR /app
+
+COPY --from=builder /app/target/*.jar app.jar 2>/dev/null || true
+COPY --from=builder /app/build/libs/*.jar app.jar 2>/dev/null || true
+{% else %}
+# ---------- Generic: single stage ----------
+FROM {{ svc.image }}
+
+WORKDIR /app
+
+COPY . .
+{% endif %}
+
+{% for port in svc.ports %}
+EXPOSE {{ port.container }}
+{% endfor %}
+
+{% if svc.entrypoint %}
+CMD {{ svc.entrypoint }}
+{% endif %}

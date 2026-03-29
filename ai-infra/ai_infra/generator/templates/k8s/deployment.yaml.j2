@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ svc.name }}
+  labels:
+    app: {{ svc.name }}
+    project: {{ model.project_name }}
+spec:
+  replicas: {{ svc.sizing.replicas }}
+  selector:
+    matchLabels:
+      app: {{ svc.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ svc.name }}
+        project: {{ model.project_name }}
+    spec:
+{% if svc.depends_on %}
+      initContainers:
+{% for dep in svc.depends_on %}
+        - name: wait-for-{{ dep }}
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z {{ dep }} 1; do echo waiting for {{ dep }}; sleep 2; done']
+{% endfor %}
+{% endif %}
+      containers:
+        - name: {{ svc.name }}
+          image: {{ svc.image }}
+{% if svc.entrypoint %}
+          command: ["/bin/sh", "-c", "{{ svc.entrypoint }}"]
+{% endif %}
+{% if svc.ports %}
+          ports:
+{% for port in svc.ports %}
+            - containerPort: {{ port.container }}
+              protocol: {{ port.protocol }}
+{% endfor %}
+{% endif %}
+          resources:
+            requests:
+              cpu: {{ svc.sizing.cpu_requests }}
+              memory: {{ svc.sizing.memory_requests }}
+{% if model.capabilities.needs_gpu %}
+              nvidia.com/gpu: "1"
+{% endif %}
+            limits:
+              cpu: {{ svc.sizing.cpu_limits }}
+              memory: {{ svc.sizing.memory_limits }}
+{% if model.capabilities.needs_gpu %}
+              nvidia.com/gpu: "1"
+{% endif %}
+{% if svc.env %}
+          env:
+{% for env_name, env_var in svc.env.items() %}
+{% if env_var.kind == "literal" %}
+            - name: {{ env_name }}
+              value: "{{ env_var.value }}"
+{% elif env_var.kind == "ref" %}
+            - name: {{ env_name }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ model.project_name }}-config
+                  key: {{ env_var.ref }}
+{% elif env_var.kind == "secret" %}
+            - name: {{ env_name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ model.project_name }}-secrets
+                  key: {{ env_var.ref }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if svc.volumes %}
+          volumeMounts:
+{% for vol in svc.volumes %}
+            - name: {{ vol.name }}
+              mountPath: {{ vol.mount_path }}
+{% endfor %}
+      volumes:
+{% for vol in svc.volumes %}
+        - name: {{ vol.name }}
+          persistentVolumeClaim:
+            claimName: {{ vol.name }}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ namespace }}-quota
+  namespace: {{ namespace }}
+  labels:
+    project: {{ model.project_name }}
+    tenant: {{ tenant.name }}
+spec:
+  hard:
+    requests.cpu: "{{ tenant.resource_quota_cpu }}"
+    requests.memory: "{{ tenant.resource_quota_memory }}"
+    limits.cpu: "{{ tenant.resource_quota_cpu }}"
+    limits.memory: "{{ tenant.resource_quota_memory }}"
+    pods: "50"
+    services: "20"
+    persistentvolumeclaims: "10"

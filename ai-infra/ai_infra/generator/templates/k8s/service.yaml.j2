@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ svc.name }}
+  labels:
+    app: {{ svc.name }}
+    project: {{ model.project_name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ svc.name }}
+  ports:
+{% for port in svc.ports %}
+    - port: {{ port.container }}
+      targetPort: {{ port.container }}
+      protocol: {{ port.protocol }}
+{% endfor %}

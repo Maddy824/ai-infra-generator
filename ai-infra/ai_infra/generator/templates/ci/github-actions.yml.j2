@@ -1,0 +1,82 @@
+name: Build and Deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: {{ cicd.registry }}
+  IMAGE_PREFIX: {{ model.project_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ '{{' }} env.REGISTRY {{ '}}' }}
+          username: ${{ '{{' }} github.actor {{ '}}' }}
+          password: ${{ '{{' }} secrets.GITHUB_TOKEN {{ '}}' }}
+
+{% if cicd.lint %}
+      - name: Lint
+        run: echo "Add your lint command here"
+{% endif %}
+
+{% if cicd.run_tests %}
+      - name: Test
+        run: echo "Add your test command here"
+{% endif %}
+
+{% for svc in app_services %}
+      - name: Build and push {{ svc.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.{{ svc.name }}
+          push: ${{ '{{' }} github.event_name != 'pull_request' {{ '}}' }}
+          tags: ${{ '{{' }} env.REGISTRY {{ '}}' }}/${{ '{{' }} env.IMAGE_PREFIX {{ '}}' }}/{{ svc.name }}:${{ '{{' }} github.sha {{ '}}' }}
+{% endfor %}
+
+{% if cicd.auto_deploy %}
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+{% if cicd.cluster_auth == "aws" %}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ '{{' }} secrets.AWS_ACCESS_KEY_ID {{ '}}' }}
+          aws-secret-access-key: ${{ '{{' }} secrets.AWS_SECRET_ACCESS_KEY {{ '}}' }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ '{{' }} env.IMAGE_PREFIX {{ '}}' }}
+{% elif cicd.cluster_auth == "gke" %}
+      - name: Authenticate to GKE
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ '{{' }} secrets.GCP_SA_KEY {{ '}}' }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ '{{' }} env.IMAGE_PREFIX {{ '}}' }}
+{% endif %}
+
+      - name: Deploy to Kubernetes
+        run: kubectl apply -f k8s/
+{% endif %}

@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ai-infra state (users generate this locally)
+.ai-infra/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+
+# Internal docs (not for distribution)
+docs/
+EXTREME_DETAIL_REPORT.md
+IMPLEMENTATION_NOTES.md
+STATUS.md
+implementation_plan.md
+ARCHITECTURE_HANDOFF.md
+DEEP_DIVE_ARCHITECTURE.md

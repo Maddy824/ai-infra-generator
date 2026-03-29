@@ -1,0 +1,64 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ namespace }}-isolation
+  namespace: {{ namespace }}
+  labels:
+    project: {{ model.project_name }}
+    tenant: {{ tenant.name }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from within the same namespace
+    - from:
+        - podSelector: {}
+{% if multi_tenancy.shared_services %}
+    # Allow traffic from shared services namespace
+    - from:
+{% for shared_svc in multi_tenancy.shared_services %}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+          podSelector:
+            matchLabels:
+              app: {{ shared_svc }}
+{% endfor %}
+{% endif %}
+  egress:
+    # Allow traffic within the same namespace
+    - to:
+        - podSelector: {}
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{% if multi_tenancy.shared_services %}
+    # Allow traffic to shared services
+    - to:
+{% for shared_svc in multi_tenancy.shared_services %}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+          podSelector:
+            matchLabels:
+              app: {{ shared_svc }}
+{% endfor %}
+{% endif %}
+    # Allow external egress (internet)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16

@@ -1,0 +1,51 @@
+# Default values for enterprise-app
+
+replicaCount: 1
+
+web:
+  enabled: true
+  image: python:3.11-slim
+  command: "uvicorn main:app --host 0.0.0.0 --port 8000"
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    ports:
+      - port: 8000
+        targetPort: 8000
+        protocol: TCP
+  env:
+    DATABASE_URL: "postgres://u:p@postgres:5432/db"
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    ports:
+      - port: 5432
+        targetPort: 5432
+        protocol: TCP
+  env:
+
+
+ingress:
+  enabled: true
+  className: nginx
+  host: app.example.com
+  tls: True
+

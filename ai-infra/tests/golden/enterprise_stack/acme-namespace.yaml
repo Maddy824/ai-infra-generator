@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acme
+  labels:
+    project: enterprise-app
+    tenant: acme
+    managed-by: ai-infra

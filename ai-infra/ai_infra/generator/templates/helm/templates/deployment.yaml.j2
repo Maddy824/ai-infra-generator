@@ -1,0 +1,44 @@
+{{ '{{' }} range $svcName, $svc := .Values {{ '}}' }}
+{{ '{{' }} if and (kindIs "map" $svc) (index $svc "enabled") {{ '}}' }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ '{{' }} $svcName {{ '}}' }}
+  labels:
+    app: {{ '{{' }} $svcName {{ '}}' }}
+    chart: {{ '{{' }} $.Chart.Name {{ '}}' }}-{{ '{{' }} $.Chart.Version {{ '}}' }}
+spec:
+  replicas: {{ '{{' }} $svc.replicas | default 1 {{ '}}' }}
+  selector:
+    matchLabels:
+      app: {{ '{{' }} $svcName {{ '}}' }}
+  template:
+    metadata:
+      labels:
+        app: {{ '{{' }} $svcName {{ '}}' }}
+    spec:
+      containers:
+        - name: {{ '{{' }} $svcName {{ '}}' }}
+          image: {{ '{{' }} $svc.image {{ '}}' }}
+          {{ '{{' }} if $svc.command {{ '}}' }}
+          command: ["/bin/sh", "-c", {{ '{{' }} $svc.command | quote {{ '}}' }}]
+          {{ '{{' }} end {{ '}}' }}
+          {{ '{{' }} if $svc.service {{ '}}' }}
+          ports:
+            {{ '{{' }} range $svc.service.ports {{ '}}' }}
+            - containerPort: {{ '{{' }} .port {{ '}}' }}
+              protocol: {{ '{{' }} .protocol | default "TCP" {{ '}}' }}
+            {{ '{{' }} end {{ '}}' }}
+          {{ '{{' }} end {{ '}}' }}
+          resources:
+            {{ '{{' }} toYaml $svc.resources | nindent 12 {{ '}}' }}
+          {{ '{{' }} if $svc.env {{ '}}' }}
+          env:
+            {{ '{{' }} range $key, $val := $svc.env {{ '}}' }}
+            - name: {{ '{{' }} $key {{ '}}' }}
+              value: {{ '{{' }} $val | quote {{ '}}' }}
+            {{ '{{' }} end {{ '}}' }}
+          {{ '{{' }} end {{ '}}' }}
+{{ '{{' }} end {{ '}}' }}
+{{ '{{' }} end {{ '}}' }}
+---

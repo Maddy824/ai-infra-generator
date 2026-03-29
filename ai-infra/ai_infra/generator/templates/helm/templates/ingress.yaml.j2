@@ -1,0 +1,39 @@
+{{ '{{' }} if .Values.ingress.enabled {{ '}}' }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ '{{' }} .Chart.Name {{ '}}' }}-ingress
+  labels:
+    chart: {{ '{{' }} .Chart.Name {{ '}}' }}-{{ '{{' }} .Chart.Version {{ '}}' }}
+  annotations:
+    kubernetes.io/ingress.class: {{ '{{' }} .Values.ingress.className | default "nginx" {{ '}}' }}
+{% raw %}
+    {{- if .Values.ingress.tls }}
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    {{- end }}
+spec:
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Chart.Name }}-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          {{- range $svcName, $svc := .Values }}
+          {{- if and (kindIs "map" $svc) (hasKey $svc "enabled") (hasKey $svc "service") }}
+          {{- if $svc.enabled }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $svcName }}
+                port:
+                  number: {{ (index $svc.service.ports 0).port }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+{% endraw %}
+{{ '{{' }} end {{ '}}' }}

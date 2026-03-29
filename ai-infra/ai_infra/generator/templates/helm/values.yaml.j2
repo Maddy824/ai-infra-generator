@@ -1,0 +1,52 @@
+# Default values for {{ model.project_name }}
+
+replicaCount: 1
+
+{% for svc in model.services %}
+{{ svc.name }}:
+  enabled: true
+  image: {{ svc.image }}
+{% if svc.entrypoint %}
+  command: "{{ svc.entrypoint }}"
+{% endif %}
+  replicas: {{ svc.sizing.replicas }}
+  resources:
+    requests:
+      cpu: {{ svc.sizing.cpu_requests }}
+      memory: {{ svc.sizing.memory_requests }}
+    limits:
+      cpu: {{ svc.sizing.cpu_limits }}
+      memory: {{ svc.sizing.memory_limits }}
+{% if svc.ports %}
+  service:
+    type: ClusterIP
+    ports:
+{% for port in svc.ports %}
+      - port: {{ port.container }}
+        targetPort: {{ port.container }}
+        protocol: {{ port.protocol }}
+{% endfor %}
+{% endif %}
+{% if svc.env %}
+  env:
+{% for env_name, env_var in svc.env.items() %}
+{% if env_var.kind == "literal" %}
+    {{ env_name }}: "{{ env_var.value }}"
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+ingress:
+  enabled: true
+  className: {{ model.cluster_assumptions.ingress_class_name }}
+  host: {{ model.routing.domain }}
+  tls: {{ model.cluster_assumptions.tls_enabled }}
+
+{% if helm.values_overrides %}
+# Custom values overrides
+{% for key, value in helm.values_overrides.items() %}
+{{ key }}: {{ value }}
+{% endfor %}
+{% endif %}

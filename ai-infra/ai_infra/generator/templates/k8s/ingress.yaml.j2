@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ model.project_name }}-ingress
+  labels:
+    project: {{ model.project_name }}
+  annotations:
+    kubernetes.io/ingress.class: {{ model.cluster_assumptions.ingress_class_name }}
+{% if model.cluster_assumptions.ingress_controller == "nginx" %}
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ model.cluster_assumptions.tls_enabled }}"
+{% elif model.cluster_assumptions.ingress_controller == "traefik" %}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "{{ model.cluster_assumptions.tls_enabled }}"
+{% elif model.cluster_assumptions.ingress_controller == "alb" %}
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+{% if model.cluster_assumptions.tls_enabled %}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+{% endif %}
+{% endif %}
+{% if model.cluster_assumptions.tls_enabled and model.cluster_assumptions.cert_manager and model.cluster_assumptions.ingress_controller != "alb" %}
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+{% endif %}
+spec:
+{% if model.cluster_assumptions.tls_enabled %}
+  tls:
+    - hosts:
+        - {{ model.routing.domain }}
+      secretName: {{ model.project_name }}-tls
+{% endif %}
+  rules:
+    - host: {{ model.routing.domain }}
+      http:
+        paths:
+{% for svc in app_services %}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ svc.name }}
+                port:
+                  number: {{ svc.ports[0].container }}
+{% endfor %}

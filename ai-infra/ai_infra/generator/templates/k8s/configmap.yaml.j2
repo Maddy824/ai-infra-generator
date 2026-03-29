@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ model.project_name }}-config
+  labels:
+    project: {{ model.project_name }}
+data:
+{% for key, ref in ref_envs.items() %}
+  {{ ref }}: "CHANGE_ME"
+{% endfor %}

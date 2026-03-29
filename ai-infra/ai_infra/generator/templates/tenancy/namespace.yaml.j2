@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ namespace }}
+  labels:
+    project: {{ model.project_name }}
+    tenant: {{ tenant.name }}
+    managed-by: ai-infra
