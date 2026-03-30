@@ -175,5 +175,131 @@ def fix(
         console.print(f"  {change}")
 
 
+# ---------------------------------------------------------------------------
+# run (full pipeline)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def run(
+    repo: Path = typer.Argument(..., help="Path to the repository."),
+    target: str = typer.Option("all", "--target", "-t", help="Generation target."),
+    force: bool = typer.Option(False, "--force", "-f", help="Force regeneration."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Run the full pipeline: init -> analyze -> plan -> generate."""
+    _setup_logging(verbose)
+    from ai_infra.analyzer.core import analyze as run_analyze
+    from ai_infra.generator.generator import Generator
+    from ai_infra.planner.planner import Planner
+    from ai_infra.state.state_manager import StateManager
+
+    # 1. Init
+    state = StateManager(repo)
+    if not state.exists():
+        state.init_state_dir()
+        state.write_hints_starter()
+        console.print("[green]Initialized .ai-infra/[/green]")
+    else:
+        console.print("[dim]State directory already exists, reusing.[/dim]")
+
+    # 2. Analyze
+    console.print("[bold]Analyzing repository...[/bold]")
+    result = run_analyze(repo)
+    console.print(f"  Language: {result.get('language')}  Framework: {result.get('framework')}")
+
+    # 3. Plan
+    console.print("[bold]Running AI planner...[/bold]")
+    planner = Planner(repo)
+    try:
+        model = planner.plan(result)
+    except RuntimeError as exc:
+        console.print(f"[red]Planning failed: {exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"  Project: {model.project_name}  Services: {len(model.services)}")
+
+    # 4. Generate
+    valid_targets = {"compose", "k8s", "ci", "helm", "iac", "monitoring", "tenancy", "all"}
+    if target not in valid_targets:
+        console.print(f"[red]Invalid target '{target}'. Choose from: {', '.join(sorted(valid_targets))}[/red]")
+        raise typer.Exit(1)
+
+    gen = Generator(repo)
+    files = gen.generate(model, target=target, force=force)
+    console.print(Panel(f"[green]Done! Generated {len(files)} file(s) for target '{target}'[/green]"))
+    for f in files:
+        console.print(f"  → {f}")
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def status(
+    repo: Path = typer.Argument(..., help="Path to the repository."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Show the current state of the ai-infra pipeline."""
+    _setup_logging(verbose)
+    from ai_infra.state.state_manager import StateManager
+
+    state = StateManager(repo)
+    if not state.exists():
+        console.print("[red]No .ai-infra/ directory found. Run 'ai-infra init' first.[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel("[bold]ai-infra pipeline status[/bold]"))
+
+    # Check each artifact
+    artifacts = [
+        ("state.json", "State tracking"),
+        ("analyzer_output.json", "Analyzer output"),
+        ("infra_model.v1.json", "Infrastructure model"),
+        ("plan.md", "Plan summary"),
+        ("hints.yaml", "User hints"),
+    ]
+    for filename, label in artifacts:
+        path = state.state_dir / filename
+        if path.exists():
+            size = path.stat().st_size
+            console.print(f"  [green]✓[/green] {label:<25} ({filename}, {size:,} bytes)")
+        else:
+            console.print(f"  [dim]✗[/dim] {label:<25} ({filename})")
+
+    # Show model summary if available
+    try:
+        model = state.read_infra_model()
+        console.print()
+        console.print(f"  [bold]Project:[/bold] {model.project_name}")
+        console.print(f"  [bold]Services:[/bold] {', '.join(s.name for s in model.services)}")
+        console.print(f"  [bold]Scale:[/bold] {model.services[0].sizing.scale}")
+        enabled = []
+        if model.helm.enabled:
+            enabled.append("Helm")
+        if model.iac.enabled:
+            enabled.append(f"IaC ({model.iac.cloud_provider})")
+        if model.monitoring.enabled:
+            enabled.append("Monitoring")
+        if model.multi_tenancy.enabled:
+            enabled.append("Multi-tenancy")
+        if enabled:
+            console.print(f"  [bold]Enabled:[/bold] {', '.join(enabled)}")
+        else:
+            console.print("  [bold]Enabled:[/bold] Core only (compose, k8s, ci)")
+    except FileNotFoundError:
+        pass
+
+    # Show dirty files
+    st = state.get_state()
+    dirty = [f for f, info in st.get("files", {}).items() if info.get("dirty", True)]
+    if dirty:
+        console.print()
+        console.print(f"  [yellow]Dirty files ({len(dirty)}):[/yellow]")
+        for f in dirty:
+            console.print(f"    {f}")
+
+
 if __name__ == "__main__":
     app()

@@ -73,22 +73,31 @@ class Planner:
 
     def _call_llm_with_retry(self, prompt: str) -> InfraModel:
         """Call the LLM and retry with repair prompts on validation failure."""
+        from rich.console import Console
+
+        console = Console()
         last_error: ValidationError | None = None
 
         for attempt in range(settings.LLM_MAX_RETRIES + 1):
             if attempt == 0:
-                raw = self._call_llm(SYSTEM_PROMPT, prompt)
+                status_msg = f"Calling {settings.LLM_BACKEND} LLM..."
             else:
+                status_msg = f"Retry {attempt}/{settings.LLM_MAX_RETRIES} — sending repair prompt..."
                 logger.warning(
                     "Attempt %d/%d — sending repair prompt.",
                     attempt + 1,
                     settings.LLM_MAX_RETRIES + 1,
                 )
-                repair = REPAIR_PROMPT.format(
-                    validation_error=str(last_error),
-                    original_prompt=prompt,
-                )
-                raw = self._call_llm(SYSTEM_PROMPT, repair)
+
+            with console.status(f"[bold cyan]{status_msg}[/bold cyan]", spinner="dots"):
+                if attempt == 0:
+                    raw = self._call_llm(SYSTEM_PROMPT, prompt)
+                else:
+                    repair = REPAIR_PROMPT.format(
+                        validation_error=str(last_error),
+                        original_prompt=prompt,
+                    )
+                    raw = self._call_llm(SYSTEM_PROMPT, repair)
 
             try:
                 cleaned = self._clean_json(raw)

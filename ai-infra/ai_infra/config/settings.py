@@ -86,7 +86,7 @@ class AiInfraSettings(BaseSettings):
 
     # ── General LLM behaviour ──────────────────────────────────────────
     LLM_TIMEOUT: int = Field(
-        default=30,
+        default=120,
         description="Timeout in seconds for LLM requests.",
     )
     LLM_MAX_RETRIES: int = Field(
