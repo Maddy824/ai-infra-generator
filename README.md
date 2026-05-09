@@ -88,7 +88,7 @@ Everything is controlled through environment variables prefixed with `AI_INFRA_`
 
 ### LLM Backends
 
-The default backend is **Ollama**, which runs locally and needs no API key.
+The default backends is **Ollama**, which runs locally and needs no API key.
 
 ```bash
 # Ollama (default — free, local)
