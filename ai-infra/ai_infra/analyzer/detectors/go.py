@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ai_infra.analyzer.detectors.base import BaseDetector
-from ai_infra.config.settings import settings
+from ai_infra.analyzer.detectors.base import (
+    BaseDetector,
+    check_existing_infra,
+    safe_read,
+)
 
 _DEP_SERVICE_MAP: dict[str, str] = {
     "github.com/jackc/pgx": "postgres",
@@ -34,17 +37,6 @@ _PORT_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def _safe_read(path: Path) -> str | None:
-    try:
-        if not path.is_file():
-            return None
-        if path.stat().st_size > settings.ANALYZER_MAX_FILE_SIZE:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-
 class GoDetector(BaseDetector):
     def matches(self, repo_path: Path) -> bool:
         return (repo_path / "go.mod").is_file()
@@ -52,7 +44,7 @@ class GoDetector(BaseDetector):
     def detect(self, repo_path: Path) -> dict | None:
         if not self.matches(repo_path):
             return None
-        go_mod = _safe_read(repo_path / "go.mod")
+        go_mod = safe_read(repo_path / "go.mod")
         if go_mod is None:
             return None
         module_name, go_version = self._parse_go_mod_header(go_mod)
@@ -62,7 +54,7 @@ class GoDetector(BaseDetector):
         entrypoint = self._detect_entrypoint(repo_path)
         detected_port = self._detect_port(repo_path, entrypoint)
         inferred = self._infer_services(dep_paths)
-        infra_files = self._check_existing_infra(repo_path)
+        infra_files = check_existing_infra(repo_path)
         return {
             "language": "go",
             "framework": framework,
@@ -140,7 +132,7 @@ class GoDetector(BaseDetector):
     def _detect_port(repo_path: Path, entrypoint: str | None) -> int | None:
         if entrypoint is None:
             return None
-        content = _safe_read(repo_path / entrypoint)
+        content = safe_read(repo_path / entrypoint)
         if content is None:
             return None
         for pat in _PORT_PATTERNS:
@@ -162,14 +154,3 @@ class GoDetector(BaseDetector):
                 if dep == mod_prefix or dep.startswith(mod_prefix + "/"):
                     services.add(svc)
         return sorted(services)
-
-    @staticmethod
-    def _check_existing_infra(repo_path: Path) -> list[str]:
-        found: list[str] = []
-        if (repo_path / "Dockerfile").is_file():
-            found.append("Dockerfile")
-        if (repo_path / "docker-compose.yml").is_file():
-            found.append("docker-compose.yml")
-        if (repo_path / "docker-compose.yaml").is_file():
-            found.append("docker-compose.yaml")
-        return found

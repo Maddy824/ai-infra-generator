@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
-
-from ai_infra.fix.fix_loop import FixLoop, InfraError, parse_logs
+from ai_infra.fix.fix_loop import FixLoop, parse_logs
 from ai_infra.models.infra_model import (
     InfraModel,
     LiteralEnv,
@@ -19,7 +16,6 @@ from ai_infra.models.infra_model import (
     VolumeMount,
 )
 from ai_infra.state.state_manager import StateManager
-
 
 # ---------------------------------------------------------------------------
 # Helpers

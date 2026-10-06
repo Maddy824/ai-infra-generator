@@ -32,14 +32,16 @@ build-web:
     DOCKER_TLS_CERTDIR: "/certs"
   script:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    - docker build -t $REGISTRY/$IMAGE_PREFIX/web:$CI_COMMIT_SHA -f Dockerfile.web .
+    - docker build -t $REGISTRY/$IMAGE_PREFIX/web:$CI_COMMIT_SHA -t $REGISTRY/$IMAGE_PREFIX/web:latest -f Dockerfile.web .
     - docker push $REGISTRY/$IMAGE_PREFIX/web:$CI_COMMIT_SHA
+    - docker push $REGISTRY/$IMAGE_PREFIX/web:latest
 
 deploy:
   stage: deploy
   image: bitnami/kubectl:latest
   script:
     - kubectl apply -f k8s/
+    - kubectl set image deployment/web web=$REGISTRY/$IMAGE_PREFIX/web:$CI_COMMIT_SHA
   only:
     - main
   environment:

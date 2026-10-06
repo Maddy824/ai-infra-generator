@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ai_infra.analyzer.detectors.base import BaseDetector
-from ai_infra.config.settings import settings
+from ai_infra.analyzer.detectors.base import (
+    BaseDetector,
+    check_existing_infra,
+    safe_read,
+)
 
 # ---------------------------------------------------------------------------
 # Dependency -> inferred service mapping
@@ -53,18 +56,6 @@ _PORT_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def _safe_read(path: Path) -> str | None:
-    """Read a file if it exists and is within the size limit."""
-    try:
-        if not path.is_file():
-            return None
-        if path.stat().st_size > settings.ANALYZER_MAX_FILE_SIZE:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-
 def _strip_version(dep: str) -> str:
     """Strip version specifiers from a dependency string.
 
@@ -100,7 +91,7 @@ class PythonDetector(BaseDetector):
         entrypoint = self._detect_entrypoint(repo_path, framework)
         detected_port = self._detect_port(repo_path, entrypoint)
         inferred = self._infer_services(dep_names)
-        infra_files = self._check_existing_infra(repo_path)
+        infra_files = check_existing_infra(repo_path)
 
         return {
             "language": "python",
@@ -121,7 +112,7 @@ class PythonDetector(BaseDetector):
         deps: list[str] = []
 
         # requirements.txt
-        req_txt = _safe_read(repo_path / "requirements.txt")
+        req_txt = safe_read(repo_path / "requirements.txt")
         if req_txt is not None:
             for line in req_txt.splitlines():
                 line = line.strip()
@@ -131,7 +122,7 @@ class PythonDetector(BaseDetector):
 
         # pyproject.toml [project.dependencies]
         pyproject_path = repo_path / "pyproject.toml"
-        pyproject_txt = _safe_read(pyproject_path)
+        pyproject_txt = safe_read(pyproject_path)
         if pyproject_txt is not None:
             try:
                 import tomllib
@@ -170,7 +161,7 @@ class PythonDetector(BaseDetector):
     def _detect_port(repo_path: Path, entrypoint: str | None) -> int | None:
         if entrypoint is None:
             return None
-        content = _safe_read(repo_path / entrypoint)
+        content = safe_read(repo_path / entrypoint)
         if content is None:
             return None
         for pat in _PORT_PATTERNS:
@@ -198,14 +189,3 @@ class PythonDetector(BaseDetector):
 
         # If sqlalchemy is present but no specific driver was found, don't assume
         return sorted(services)
-
-    @staticmethod
-    def _check_existing_infra(repo_path: Path) -> list[str]:
-        found: list[str] = []
-        if (repo_path / "Dockerfile").is_file():
-            found.append("Dockerfile")
-        if (repo_path / "docker-compose.yml").is_file():
-            found.append("docker-compose.yml")
-        if (repo_path / "docker-compose.yaml").is_file():
-            found.append("docker-compose.yaml")
-        return found

@@ -48,7 +48,7 @@ ai-infra/
 
 1. Add config fields in `ai_infra/config/settings.py`
 2. Add a `_call_{backend}()` method in `ai_infra/planner/planner.py`
-3. Update the backend routing in `_call_llm()`
+3. Register it in the `backends` mapping in `_call_llm()` (use `_post_json()` for the HTTP call so errors are reported consistently)
 
 ## Testing
 
@@ -57,6 +57,7 @@ pytest                     # Run all tests
 pytest -x                  # Stop on first failure
 pytest --cov=ai_infra      # With coverage
 pytest tests/analyzer/     # Run specific test module
+ruff check .               # Lint (CI runs this too)
 ```
 
 ## Code Style

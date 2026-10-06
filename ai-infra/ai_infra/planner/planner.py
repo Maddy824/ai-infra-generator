@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -71,16 +72,23 @@ class Planner:
 
     # -- LLM interaction ---------------------------------------------------
 
-    def _call_llm_with_retry(self, prompt: str) -> InfraModel:
-        """Call the LLM and retry with repair prompts on validation failure."""
+    def _call_llm_with_retry(
+        self, prompt: str, system: str = SYSTEM_PROMPT, label: str = "Planner",
+    ) -> InfraModel:
+        """Call the LLM and retry with repair prompts on validation failure.
+
+        Network / API errors raise :class:`RuntimeError` immediately; only
+        invalid or schema-violating responses are retried.
+        """
         from rich.console import Console
 
-        console = Console()
+        console = Console(stderr=True)
         last_error: ValidationError | None = None
 
         for attempt in range(settings.LLM_MAX_RETRIES + 1):
             if attempt == 0:
                 status_msg = f"Calling {settings.LLM_BACKEND} LLM..."
+                user = prompt
             else:
                 status_msg = f"Retry {attempt}/{settings.LLM_MAX_RETRIES} — sending repair prompt..."
                 logger.warning(
@@ -88,227 +96,222 @@ class Planner:
                     attempt + 1,
                     settings.LLM_MAX_RETRIES + 1,
                 )
+                user = REPAIR_PROMPT.format(
+                    validation_error=str(last_error),
+                    original_prompt=prompt,
+                )
 
             with console.status(f"[bold cyan]{status_msg}[/bold cyan]", spinner="dots"):
-                if attempt == 0:
-                    raw = self._call_llm(SYSTEM_PROMPT, prompt)
-                else:
-                    repair = REPAIR_PROMPT.format(
-                        validation_error=str(last_error),
-                        original_prompt=prompt,
-                    )
-                    raw = self._call_llm(SYSTEM_PROMPT, repair)
+                raw = self._call_llm(system, user)
 
             try:
-                cleaned = self._clean_json(raw)
-                model = InfraModel.model_validate_json(cleaned)
-                return model
+                return InfraModel.model_validate_json(self._clean_json(raw))
             except ValidationError as exc:
                 last_error = exc
                 logger.warning("Validation failed on attempt %d: %s", attempt + 1, exc)
 
         raise RuntimeError(
-            f"Planner failed after {settings.LLM_MAX_RETRIES + 1} attempts. "
+            f"{label} failed after {settings.LLM_MAX_RETRIES + 1} attempts. "
             f"Last validation error: {last_error}"
         )
 
     def _call_llm(self, system: str, user: str) -> str:
-        """Call the configured LLM backend.
+        """Call the configured LLM backend and return the raw text response.
 
         Raises :class:`RuntimeError` immediately on network or API errors so
         that partial / corrupt state is never written to disk.
         """
-        if settings.LLM_BACKEND == "ollama":
-            return self._call_ollama(system, user)
-        elif settings.LLM_BACKEND == "claude":
-            return self._call_claude(system, user)
-        elif settings.LLM_BACKEND == "openai":
-            return self._call_openai(system, user)
-        elif settings.LLM_BACKEND == "gemini":
-            return self._call_gemini(system, user)
-        else:
-            raise ValueError(f"Unknown LLM backend: {settings.LLM_BACKEND}")
+        backends = {
+            "ollama": self._call_ollama,
+            "claude": self._call_claude,
+            "openai": self._call_openai,
+            "gemini": self._call_gemini,
+        }
+        try:
+            call = backends[settings.LLM_BACKEND]
+        except KeyError:
+            raise ValueError(f"Unknown LLM backend: {settings.LLM_BACKEND}") from None
+        return call(system, user)
 
-    def _call_ollama(self, system: str, user: str) -> str:
-        """Call Ollama API."""
+    @staticmethod
+    def _post_json(name: str, url: str, *, hint: str = "", **kwargs: Any) -> dict:
+        """POST to an LLM API and return the decoded JSON body.
+
+        All transport and HTTP failures are converted to :class:`RuntimeError`
+        with a message suitable for showing to the user.
+        """
         import httpx
 
         try:
-            response = httpx.post(
-                f"{settings.OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": settings.OLLAMA_MODEL,
-                    "system": system,
-                    "prompt": user,
-                    "stream": False,
-                },
-                timeout=settings.LLM_TIMEOUT,
-            )
+            response = httpx.post(url, timeout=settings.LLM_TIMEOUT, **kwargs)
             response.raise_for_status()
-            return response.json()["response"]
+            return response.json()
         except httpx.TimeoutException as exc:
             raise RuntimeError(
-                f"Ollama request timed out after {settings.LLM_TIMEOUT}s. "
-                f"Is Ollama running at {settings.OLLAMA_BASE_URL}?"
+                f"{name} request timed out after {settings.LLM_TIMEOUT}s. {hint}".strip()
             ) from exc
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(
-                f"Ollama returned HTTP {exc.response.status_code}: "
+                f"{name} returned HTTP {exc.response.status_code}: "
                 f"{exc.response.text[:500]}"
             ) from exc
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {settings.OLLAMA_BASE_URL}. "
-                f"Is the Ollama server running?"
-            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Cannot reach {name}: {exc}. {hint}".strip()) from exc
+        except ValueError as exc:
+            raise RuntimeError(f"{name} returned a non-JSON response.") from exc
+
+    def _call_ollama(self, system: str, user: str) -> str:
+        """Call Ollama API."""
+        data = self._post_json(
+            "Ollama",
+            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            hint=f"Is Ollama running at {settings.OLLAMA_BASE_URL}?",
+            json={
+                "model": settings.OLLAMA_MODEL,
+                "system": system,
+                "prompt": user,
+                "stream": False,
+                # Constrain decoding to valid JSON -- small local models
+                # otherwise often wrap the answer in prose.
+                "format": "json",
+                "options": {"temperature": 0.2},
+            },
+        )
+        try:
+            return data["response"]
+        except KeyError as exc:
+            raise RuntimeError(f"Unexpected Ollama response: {str(data)[:500]}") from exc
 
     def _call_claude(self, system: str, user: str) -> str:
-        """Call Claude API via httpx."""
-        import httpx
-
+        """Call the Claude Messages API via httpx."""
         if not settings.CLAUDE_API_KEY:
             raise RuntimeError(
                 "ANTHROPIC_API_KEY not set. Configure it to use the Claude backend."
             )
 
-        try:
-            response = httpx.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": settings.CLAUDE_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": settings.CLAUDE_MODEL,
-                    "max_tokens": 4096,
-                    "system": system,
-                    "messages": [{"role": "user", "content": user}],
-                },
-                timeout=settings.LLM_TIMEOUT,
+        headers = {
+            "x-api-key": settings.CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        body: dict[str, Any] = {
+            "model": settings.CLAUDE_MODEL,
+            "max_tokens": settings.LLM_MAX_TOKENS,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if settings.CLAUDE_FALLBACKS:
+            headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
+            body["fallbacks"] = "default"
+
+        data = self._post_json(
+            "Claude API",
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=body,
+        )
+
+        stop_reason = data.get("stop_reason")
+        if stop_reason == "refusal":
+            details = data.get("stop_details") or {}
+            raise RuntimeError(
+                f"Claude declined the request (category: {details.get('category')})."
             )
-            response.raise_for_status()
-            return response.json()["content"][0]["text"]
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                f"Claude API request timed out after {settings.LLM_TIMEOUT}s."
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
-                f"Claude API returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            ) from exc
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                "Cannot connect to the Claude API. Check your network connection."
-            ) from exc
+        # The response may contain thinking blocks before the answer; only
+        # text blocks carry the JSON we asked for.
+        text = "".join(
+            block.get("text", "")
+            for block in data.get("content", [])
+            if block.get("type") == "text"
+        )
+        if stop_reason == "max_tokens":
+            logger.warning(
+                "Claude response hit max_tokens (%d); output may be truncated. "
+                "Raise AI_INFRA_LLM_MAX_TOKENS if this persists.",
+                settings.LLM_MAX_TOKENS,
+            )
+        if not text:
+            raise RuntimeError("Claude API returned no text content.")
+        return text
 
     def _call_openai(self, system: str, user: str) -> str:
         """Call OpenAI-compatible chat completions API."""
-        import httpx
-
         if not settings.OPENAI_API_KEY:
             raise RuntimeError(
                 "OPENAI_API_KEY not set. Configure it to use the OpenAI backend."
             )
 
+        data = self._post_json(
+            "OpenAI API",
+            f"{settings.OPENAI_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.OPENAI_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.2,
+            },
+        )
         try:
-            response = httpx.post(
-                f"{settings.OPENAI_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.OPENAI_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.2,
-                },
-                timeout=settings.LLM_TIMEOUT,
-            )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                f"OpenAI request timed out after {settings.LLM_TIMEOUT}s."
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
-                f"OpenAI API returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            ) from exc
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                f"Cannot connect to OpenAI API at {settings.OPENAI_BASE_URL}. "
-                f"Check your network connection."
-            ) from exc
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected OpenAI response: {str(data)[:500]}") from exc
 
     def _call_gemini(self, system: str, user: str) -> str:
         """Call Google Gemini generateContent API."""
-        import httpx
-
         if not settings.GEMINI_API_KEY:
             raise RuntimeError(
                 "GEMINI_API_KEY not set. Configure it to use the Gemini backend."
             )
 
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{settings.GEMINI_MODEL}:generateContent"
-            f"?key={settings.GEMINI_API_KEY}"
-        )
-
-        try:
-            response = httpx.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                json={
-                    "system_instruction": {
-                        "parts": [{"text": system}],
-                    },
-                    "contents": [
-                        {"role": "user", "parts": [{"text": user}]},
-                    ],
-                    "generationConfig": {
-                        "temperature": 0.2,
-                    },
+        data = self._post_json(
+            "Gemini API",
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{settings.GEMINI_MODEL}:generateContent",
+            # Send the key as a header rather than a query parameter so it
+            # never ends up in URLs printed in error messages or logs.
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": settings.GEMINI_API_KEY,
+            },
+            json={
+                "system_instruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "responseMimeType": "application/json",
                 },
-                timeout=settings.LLM_TIMEOUT,
-            )
-            response.raise_for_status()
-            data = response.json()
+            },
+        )
+        try:
             return data["candidates"][0]["content"]["parts"][0]["text"]
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                f"Gemini request timed out after {settings.LLM_TIMEOUT}s."
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
-                f"Gemini API returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            ) from exc
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                "Cannot connect to the Gemini API. Check your network connection."
-            ) from exc
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Gemini response: {str(data)[:500]}") from exc
 
     # -- output helpers ----------------------------------------------------
 
     @staticmethod
     def _clean_json(raw: str) -> str:
-        """Strip markdown code fences and surrounding whitespace.
+        """Extract the JSON object from an LLM response.
 
         Handles patterns like:
-        - ````` ```json ... ``` `````
-        - ````` ``` ... ``` `````
+        - ````` ```json ... ``` ````` (anywhere in the response)
+        - Prose before or after the JSON object
         - Leading/trailing whitespace or newlines
         """
         text = raw.strip()
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"\n?```\s*$", "", text)
+        fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
+        if not text.startswith("{"):
+            first, last = text.find("{"), text.rfind("}")
+            if first != -1 and last > first:
+                text = text[first : last + 1]
         return text.strip()
 
     @staticmethod

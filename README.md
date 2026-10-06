@@ -51,8 +51,8 @@ That's it. Your repo now has Dockerfiles, Compose, Kubernetes manifests, and mor
 
 | Target | Output | When |
 |---|---|---|
-| `compose` | Dockerfiles + docker-compose.yml | Always |
-| `k8s` | Deployments, Services, Ingress, HPA, ConfigMaps, Secrets | Always |
+| `compose` | Multi-stage Dockerfiles, docker-compose.yml, `.env.example`, `.dockerignore` (only if you don't have one) | Always |
+| `k8s` | Deployments (with health probes and dependency wait), Services, Ingress, HPA, PersistentVolumeClaims, ConfigMaps, Secrets | Always |
 | `ci` | CI/CD pipelines (GitHub Actions, GitLab CI, Bitbucket, CircleCI) | When `cicd.providers` is set |
 | `helm` | Chart.yaml, values.yaml, templates/ | When `helm.enabled` is true |
 | `iac` | Terraform main.tf for EKS / GKE / AKS | When `iac.enabled` is true |
@@ -113,10 +113,28 @@ AI_INFRA_LLM_BACKEND=gemini GEMINI_API_KEY=AI... ai-infra plan /path/to/repo
 | `AI_INFRA_OLLAMA_URL` | `http://localhost:11434` | Ollama server address |
 | `AI_INFRA_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Which Ollama model to use |
 | `AI_INFRA_OPENAI_MODEL` | `gpt-4o` | OpenAI model |
-| `AI_INFRA_CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Claude model |
+| `AI_INFRA_CLAUDE_MODEL` | `claude-opus-5-5` | Claude model |
+| `AI_INFRA_CLAUDE_FALLBACKS` | `true` | Let the Claude API retry a declined request on its recommended fallback model |
 | `AI_INFRA_GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model |
-| `AI_INFRA_LLM_TIMEOUT` | `30` | Request timeout in seconds |
+| `AI_INFRA_LLM_TIMEOUT` | `300` | Request timeout in seconds |
+| `AI_INFRA_LLM_MAX_TOKENS` | `16000` | Max tokens per response (Claude) |
 | `AI_INFRA_LLM_MAX_RETRIES` | `2` | Retries on validation failure |
+
+### How images flow from CI to the cluster
+
+Services of type `app` and `worker` are built from your repo (`Dockerfile.<service>`). CI pushes each one as `<registry>/<project>/<service>:<commit-sha>` and `:latest`. The Kubernetes manifests and Helm values reference `:latest`. Each deploy step applies the manifests and then pins every deployment to the commit's image with `kubectl set image`. The Bitbucket pipeline is the exception: it only applies the manifests, so the deployments keep running `:latest`. Databases and caches use their stock images.
+
+When there is more than one app service, the first one is served at `routing.domain` and each of the others gets its own subdomain (`<service>.<domain>`).
+
+---
+
+## Regenerating Safely
+
+ai-infra records a hash of every file it writes in `.ai-infra/state.json`. On later runs:
+
+- Files whose rendered content hasn't changed are left untouched.
+- Files you have **edited by hand** since the last generation are **skipped** (and listed in the output) so your changes aren't lost. Pass `--force` to overwrite them.
+- `ai-infra status` lists generated files that were modified or deleted.
 
 ---
 
@@ -193,8 +211,10 @@ uvicorn ai_infra.api.app:app --reload --port 8000
 | `POST` | `/api/plan` | Run AI planner |
 | `POST` | `/api/generate` | Generate configs |
 | `POST` | `/api/fix` | Run fix loop |
-| `GET` | `/api/stream/*` | SSE streaming variants |
+| `GET` | `/api/stream/*` | SSE streaming variants (`status` → `result` → `done`, or an `error` event on failure) |
 | `GET` | `/health` | Health check |
+
+Set `AI_INFRA_CORS_ORIGINS` to a comma-separated list of allowed origins to restrict browser access (default: any origin).
 
 ---
 

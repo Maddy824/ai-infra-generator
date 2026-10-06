@@ -15,16 +15,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ValidationError
-
-from ai_infra.config.settings import settings
 from ai_infra.generator.generator import Generator
 from ai_infra.models.infra_model import InfraModel
-from ai_infra.planner.prompts import SYSTEM_PROMPT
 from ai_infra.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -173,35 +169,10 @@ def _propose_patches_via_llm(
         errors=errors_text,
     )
 
-    # Re-use the planner's LLM call machinery with retry
-    planner = Planner.__new__(Planner)
-    planner.repo_path = Path(".")
-    planner.state = None  # not needed for LLM calls
-
-    last_error: ValidationError | None = None
-
-    for attempt in range(settings.LLM_MAX_RETRIES + 1):
-        if attempt == 0:
-            raw = planner._call_llm(SYSTEM_PROMPT, prompt)
-        else:
-            from ai_infra.planner.prompts import REPAIR_PROMPT
-            repair = REPAIR_PROMPT.format(
-                validation_error=str(last_error),
-                original_prompt=prompt,
-            )
-            raw = planner._call_llm(SYSTEM_PROMPT, repair)
-
-        try:
-            cleaned = planner._clean_json(raw)
-            patched = InfraModel.model_validate_json(cleaned)
-            return patched
-        except ValidationError as exc:
-            last_error = exc
-
-    raise RuntimeError(
-        f"Fix loop LLM failed after {settings.LLM_MAX_RETRIES + 1} attempts. "
-        f"Last error: {last_error}"
-    )
+    # Re-use the planner's LLM call + repair-retry machinery.  The planner
+    # only touches its state directory in ``plan()``, so any path will do.
+    planner = Planner(Path("."))
+    return planner._call_llm_with_retry(prompt, label="Fix loop LLM")
 
 
 def _propose_patches_deterministic(
@@ -310,7 +281,7 @@ def _compute_diff(old_model: InfraModel, new_model: InfraModel) -> list[str]:
     new = new_model.model_dump()
 
     for i, (old_svc, new_svc) in enumerate(
-        zip(old.get("services", []), new.get("services", []))
+        zip(old.get("services", []), new.get("services", []), strict=False)
     ):
         name = old_svc.get("name", f"service[{i}]")
         _diff_dict(changes, name, old_svc, new_svc, prefix="")
@@ -363,7 +334,7 @@ class FixLoop:
         except FileNotFoundError:
             raise RuntimeError(
                 "No infra model found. Run 'ai-infra plan' before using fix."
-            )
+            ) from None
 
         service_names = [s.name for s in model.services]
 

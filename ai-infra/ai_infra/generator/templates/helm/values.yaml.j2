@@ -5,9 +5,9 @@ replicaCount: 1
 {% for svc in model.services %}
 {{ svc.name }}:
   enabled: true
-  image: {{ svc.image }}
-{% if svc.entrypoint %}
-  command: "{{ svc.entrypoint }}"
+  image: {{ svc.deploy_image }}
+{% if svc.entrypoint and not svc.built %}
+  command: {{ svc.entrypoint | tojson }}
 {% endif %}
   replicas: {{ svc.sizing.replicas }}
   resources:
@@ -31,7 +31,7 @@ replicaCount: 1
   env:
 {% for env_name, env_var in svc.env.items() %}
 {% if env_var.kind == "literal" %}
-    {{ env_name }}: "{{ env_var.value }}"
+    {{ env_name }}: {{ env_var.value | tojson }}
 {% endif %}
 {% endfor %}
 {% endif %}

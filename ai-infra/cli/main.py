@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -16,6 +15,38 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+def _repo_arg() -> Path:
+    return typer.Argument(
+        ...,
+        help="Path to the repository.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+    )
+
+
+def _check_target(target: str) -> None:
+    from ai_infra.generator.generator import TARGETS
+
+    if target not in TARGETS:
+        console.print(f"[red]Invalid target '{target}'. Choose from: {', '.join(TARGETS)}[/red]")
+        raise typer.Exit(1)
+
+
+def _report_generated(files: list[Path], skipped: list[Path], target: str, repo: Path, done: bool = False) -> None:
+    prefix = "Done! " if done else ""
+    console.print(Panel(f"[green]{prefix}Generated {len(files)} file(s) for target '{target}'[/green]"))
+    for f in files:
+        console.print(f"  → {f.relative_to(repo)}")
+    if skipped:
+        console.print(
+            f"[yellow]Skipped {len(skipped)} hand-edited file(s); re-run with --force to overwrite:[/yellow]"
+        )
+        for f in skipped:
+            console.print(f"  [yellow]![/yellow] {f.relative_to(repo)}")
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -33,7 +64,7 @@ def _setup_logging(verbose: bool = False) -> None:
 
 @app.command()
 def init(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
+    repo: Path = _repo_arg(),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Initialize the .ai-infra state directory."""
@@ -57,7 +88,7 @@ def init(
 
 @app.command()
 def analyze(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
+    repo: Path = _repo_arg(),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Analyze a repository and produce analyzer_output.json."""
@@ -65,7 +96,14 @@ def analyze(
     from ai_infra.analyzer.core import analyze as run_analyze
 
     result = run_analyze(repo)
-    console.print(Panel(f"[green]Analysis complete[/green]\nLanguage: {result.get('language')}\nFramework: {result.get('framework')}"))
+    services = ", ".join(result["dependencies"]["inferred_services"]) or "none"
+    console.print(Panel(
+        f"[green]Analysis complete[/green]\n"
+        f"Language: {result.get('language')}\n"
+        f"Framework: {result.get('framework')}\n"
+        f"Port: {result.get('detected_port')}\n"
+        f"Inferred services: {services}"
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +113,7 @@ def analyze(
 
 @app.command()
 def plan(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
+    repo: Path = _repo_arg(),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run the AI planner to produce an InfraModel."""
@@ -92,7 +130,7 @@ def plan(
         analyzer_output = state.read_analyzer_output()
     except FileNotFoundError:
         console.print("[red]No analyzer output. Run 'ai-infra analyze' first.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     planner = Planner(repo)
     try:
@@ -100,7 +138,7 @@ def plan(
         console.print(Panel(f"[green]Plan complete![/green]\nProject: {model.project_name}\nServices: {len(model.services)}"))
     except RuntimeError as exc:
         console.print(f"[red]Planning failed: {exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +148,7 @@ def plan(
 
 @app.command()
 def generate(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
+    repo: Path = _repo_arg(),
     target: str = typer.Option("compose", "--target", "-t", help="Generation target."),
     force: bool = typer.Option(False, "--force", "-f", help="Force regeneration."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -120,23 +158,18 @@ def generate(
     from ai_infra.generator.generator import Generator
     from ai_infra.state.state_manager import StateManager
 
-    valid_targets = {"compose", "k8s", "ci", "helm", "iac", "monitoring", "tenancy", "all"}
-    if target not in valid_targets:
-        console.print(f"[red]Invalid target '{target}'. Choose from: {', '.join(sorted(valid_targets))}[/red]")
-        raise typer.Exit(1)
+    _check_target(target)
 
     state = StateManager(repo)
     try:
         model = state.read_infra_model()
     except FileNotFoundError:
         console.print("[red]No infra model. Run 'ai-infra plan' first.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     gen = Generator(repo)
     files = gen.generate(model, target=target, force=force)
-    console.print(Panel(f"[green]Generated {len(files)} file(s) for target '{target}'[/green]"))
-    for f in files:
-        console.print(f"  → {f}")
+    _report_generated(files, gen.skipped, target, repo)
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +179,8 @@ def generate(
 
 @app.command()
 def fix(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
-    logs: Path = typer.Option(..., "--logs", "-l", help="Path to log file."),
+    repo: Path = _repo_arg(),
+    logs: Path = typer.Option(..., "--logs", "-l", help="Path to log file.", exists=True, dir_okay=False),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -160,7 +193,7 @@ def fix(
         result = loop.fix(logs, dry_run=dry_run)
     except RuntimeError as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     n_errors = len(result.get("errors", []))
     n_changes = len(result.get("changes", []))
@@ -182,7 +215,7 @@ def fix(
 
 @app.command()
 def run(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
+    repo: Path = _repo_arg(),
     target: str = typer.Option("all", "--target", "-t", help="Generation target."),
     force: bool = typer.Option(False, "--force", "-f", help="Force regeneration."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -193,6 +226,9 @@ def run(
     from ai_infra.generator.generator import Generator
     from ai_infra.planner.planner import Planner
     from ai_infra.state.state_manager import StateManager
+
+    # Validate up front so a typo doesn't cost an LLM call.
+    _check_target(target)
 
     # 1. Init
     state = StateManager(repo)
@@ -215,20 +251,13 @@ def run(
         model = planner.plan(result)
     except RuntimeError as exc:
         console.print(f"[red]Planning failed: {exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     console.print(f"  Project: {model.project_name}  Services: {len(model.services)}")
 
     # 4. Generate
-    valid_targets = {"compose", "k8s", "ci", "helm", "iac", "monitoring", "tenancy", "all"}
-    if target not in valid_targets:
-        console.print(f"[red]Invalid target '{target}'. Choose from: {', '.join(sorted(valid_targets))}[/red]")
-        raise typer.Exit(1)
-
     gen = Generator(repo)
     files = gen.generate(model, target=target, force=force)
-    console.print(Panel(f"[green]Done! Generated {len(files)} file(s) for target '{target}'[/green]"))
-    for f in files:
-        console.print(f"  → {f}")
+    _report_generated(files, gen.skipped, target, repo, done=True)
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +267,7 @@ def run(
 
 @app.command()
 def status(
-    repo: Path = typer.Argument(..., help="Path to the repository."),
+    repo: Path = _repo_arg(),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Show the current state of the ai-infra pipeline."""
@@ -273,8 +302,9 @@ def status(
         model = state.read_infra_model()
         console.print()
         console.print(f"  [bold]Project:[/bold] {model.project_name}")
-        console.print(f"  [bold]Services:[/bold] {', '.join(s.name for s in model.services)}")
-        console.print(f"  [bold]Scale:[/bold] {model.services[0].sizing.scale}")
+        console.print(f"  [bold]Services:[/bold] {', '.join(s.name for s in model.services) or 'none'}")
+        if model.services:
+            console.print(f"  [bold]Scale:[/bold] {model.services[0].sizing.scale}")
         enabled = []
         if model.helm.enabled:
             enabled.append("Helm")
@@ -291,13 +321,20 @@ def status(
     except FileNotFoundError:
         pass
 
-    # Show dirty files
-    st = state.get_state()
-    dirty = [f for f, info in st.get("files", {}).items() if info.get("dirty", True)]
-    if dirty:
+    # Show generated files that need attention
+    tracked = state.get_state().get("files", {})
+    if tracked:
         console.print()
-        console.print(f"  [yellow]Dirty files ({len(dirty)}):[/yellow]")
-        for f in dirty:
+        console.print(f"  [bold]Generated files:[/bold] {len(tracked)}")
+    missing = [f for f in tracked if not (repo / f).is_file()]
+    modified = [f for f in tracked if f not in missing and state.was_modified(f)]
+    if modified:
+        console.print(f"  [yellow]Modified since generation ({len(modified)}):[/yellow]")
+        for f in modified:
+            console.print(f"    {f}")
+    if missing:
+        console.print(f"  [red]Missing ({len(missing)}):[/red]")
+        for f in missing:
             console.print(f"    {f}")
 
 

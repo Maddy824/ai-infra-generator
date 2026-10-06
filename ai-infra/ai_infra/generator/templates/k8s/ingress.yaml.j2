@@ -1,3 +1,5 @@
+{% set ca = model.cluster_assumptions %}
+{% set tls = "true" if ca.tls_enabled else "false" %}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -5,37 +7,37 @@ metadata:
   labels:
     project: {{ model.project_name }}
   annotations:
-    kubernetes.io/ingress.class: {{ model.cluster_assumptions.ingress_class_name }}
-{% if model.cluster_assumptions.ingress_controller == "nginx" %}
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/ssl-redirect: "{{ model.cluster_assumptions.tls_enabled }}"
-{% elif model.cluster_assumptions.ingress_controller == "traefik" %}
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: "{{ model.cluster_assumptions.tls_enabled }}"
-{% elif model.cluster_assumptions.ingress_controller == "alb" %}
-    kubernetes.io/ingress.class: alb
+{% if ca.ingress_controller == "nginx" %}
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ tls }}"
+{% elif ca.ingress_controller == "traefik" %}
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ "websecure" if ca.tls_enabled else "web" }}
+    traefik.ingress.kubernetes.io/router.tls: "{{ tls }}"
+{% elif ca.ingress_controller == "alb" %}
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-{% if model.cluster_assumptions.tls_enabled %}
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+{% if ca.tls_enabled %}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
 {% endif %}
 {% endif %}
-{% if model.cluster_assumptions.tls_enabled and model.cluster_assumptions.cert_manager and model.cluster_assumptions.ingress_controller != "alb" %}
+{% if ca.tls_enabled and ca.cert_manager and ca.ingress_controller != "alb" %}
     cert-manager.io/cluster-issuer: letsencrypt-prod
 {% endif %}
 spec:
-{% if model.cluster_assumptions.tls_enabled %}
+  ingressClassName: {{ "alb" if ca.ingress_controller == "alb" and ca.ingress_class_name == "nginx" else ca.ingress_class_name }}
+{% if ca.tls_enabled and ca.ingress_controller != "alb" %}
   tls:
     - hosts:
-        - {{ model.routing.domain }}
+{% for svc in app_services %}
+        - {{ svc.host }}
+{% endfor %}
       secretName: {{ model.project_name }}-tls
 {% endif %}
   rules:
-    - host: {{ model.routing.domain }}
+{% for svc in app_services %}
+    - host: {{ svc.host }}
       http:
         paths:
-{% for svc in app_services %}
           - path: /
             pathType: Prefix
             backend:

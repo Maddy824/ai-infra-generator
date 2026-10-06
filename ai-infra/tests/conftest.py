@@ -8,25 +8,17 @@ from pathlib import Path
 import pytest
 
 from ai_infra.models.infra_model import (
-    CICDModel,
-    ClusterAssumptionsModel,
-    HelmModel,
-    IaCModel,
     InfraModel,
     LiteralEnv,
-    MonitoringModel,
-    MultiTenancyModel,
     PortMapping,
     RefEnv,
     RoutingModel,
     SecretEnv,
     ServiceModel,
     SizingModel,
-    TenantModel,
     VolumeMount,
 )
 from ai_infra.state.state_manager import StateManager
-
 
 # ---------------------------------------------------------------------------
 # Sample model builder
@@ -195,3 +187,12 @@ def go_app_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return tmp_path
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help="Rewrite golden snapshot files from the current generator output.",
+    )

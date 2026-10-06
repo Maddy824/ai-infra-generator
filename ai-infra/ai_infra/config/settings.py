@@ -12,7 +12,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -48,18 +48,26 @@ class AiInfraSettings(BaseSettings):
     )
 
     # ── Claude / Anthropic settings ─────────────────────────────────────
-    CLAUDE_API_KEY: Optional[str] = Field(
+    CLAUDE_API_KEY: str | None = Field(
         default=None,
         validation_alias="ANTHROPIC_API_KEY",
         description="Anthropic API key (read from ANTHROPIC_API_KEY env var).",
     )
     CLAUDE_MODEL: str = Field(
-        default="claude-sonnet-4-20250514",
+        default="claude-opus-5-5",
         description="Claude model to use for inference.",
+    )
+    CLAUDE_FALLBACKS: bool = Field(
+        default=True,
+        description=(
+            "Ask the Claude API to retry a safety-declined request on its "
+            "recommended fallback model (server-side fallbacks beta). Disable "
+            "for models that do not support it."
+        ),
     )
 
     # ── OpenAI settings ────────────────────────────────────────────────
-    OPENAI_API_KEY: Optional[str] = Field(
+    OPENAI_API_KEY: str | None = Field(
         default=None,
         validation_alias="OPENAI_API_KEY",
         description="OpenAI API key (read from OPENAI_API_KEY env var).",
@@ -74,7 +82,7 @@ class AiInfraSettings(BaseSettings):
     )
 
     # ── Gemini / Google settings ───────────────────────────────────────
-    GEMINI_API_KEY: Optional[str] = Field(
+    GEMINI_API_KEY: str | None = Field(
         default=None,
         validation_alias="GEMINI_API_KEY",
         description="Google Gemini API key (read from GEMINI_API_KEY env var).",
@@ -86,8 +94,12 @@ class AiInfraSettings(BaseSettings):
 
     # ── General LLM behaviour ──────────────────────────────────────────
     LLM_TIMEOUT: int = Field(
-        default=120,
+        default=300,
         description="Timeout in seconds for LLM requests.",
+    )
+    LLM_MAX_TOKENS: int = Field(
+        default=16000,
+        description="Maximum tokens the LLM may generate per response (Claude backend).",
     )
     LLM_MAX_RETRIES: int = Field(
         default=2,

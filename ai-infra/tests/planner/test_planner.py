@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from ai_infra.models.infra_model import InfraModel
 from ai_infra.planner.planner import Planner
 from ai_infra.state.state_manager import StateManager
-
 
 # ---------------------------------------------------------------------------
 # JSON cleaning

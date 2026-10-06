@@ -10,8 +10,7 @@ import re
 from pathlib import Path
 
 import ai_infra.analyzer.detectors as _detectors_pkg
-from ai_infra.analyzer.detectors.base import BaseDetector
-from ai_infra.config.settings import settings
+from ai_infra.analyzer.detectors.base import BaseDetector, safe_read
 from ai_infra.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -21,7 +20,7 @@ def _discover_detectors() -> list[BaseDetector]:
     detectors: list[BaseDetector] = []
     package_path = _detectors_pkg.__path__
     prefix = _detectors_pkg.__name__ + "."
-    for finder, module_name, is_pkg in pkgutil.iter_modules(package_path, prefix):
+    for _finder, module_name, _is_pkg in pkgutil.iter_modules(package_path, prefix):
         try:
             module = importlib.import_module(module_name)
         except Exception:
@@ -38,19 +37,8 @@ _FROM_RE = re.compile(r"^\s*FROM\s+(\S+)", re.MULTILINE)
 _CMD_RE = re.compile(r"^\s*(?:CMD|ENTRYPOINT)\s+(.+)$", re.MULTILINE)
 
 
-def _safe_read(path: Path) -> str | None:
-    try:
-        if not path.is_file():
-            return None
-        if path.stat().st_size > settings.ANALYZER_MAX_FILE_SIZE:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-
 def _extract_dockerfile_info(repo_path: Path) -> dict | None:
-    content = _safe_read(repo_path / "Dockerfile")
+    content = safe_read(repo_path / "Dockerfile")
     if content is None:
         return None
     info: dict[str, object] = {}

@@ -29,6 +29,7 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
     "coverage>=7,<8",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -40,3 +41,17 @@ pythonpath = ["."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["ai_infra", "cli"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # long template/help strings are fine
+    "B008",  # typer.Argument()/Option() defaults are idiomatic
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ai_infra", "cli"]

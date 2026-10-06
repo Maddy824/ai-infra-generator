@@ -43,8 +43,9 @@ jobs:
           name: Build and push {{ svc.name }}
           command: |
             echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin {{ cicd.registry }}
-            docker build -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:${CIRCLE_SHA1} -f Dockerfile.{{ svc.name }} .
+            docker build -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:${CIRCLE_SHA1} -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:latest -f Dockerfile.{{ svc.name }} .
             docker push {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:${CIRCLE_SHA1}
+            docker push {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:latest
 {% endfor %}
 
 {% if cicd.auto_deploy %}
@@ -55,7 +56,11 @@ jobs:
       - checkout
       - run:
           name: Deploy to Kubernetes
-          command: kubectl apply -f k8s/
+          command: |
+            kubectl apply -f k8s/
+{% for svc in app_services %}
+            kubectl set image deployment/{{ svc.name }} {{ svc.name }}={{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:${CIRCLE_SHA1}
+{% endfor %}
 {% endif %}
 
 workflows:

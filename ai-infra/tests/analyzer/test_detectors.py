@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from ai_infra.analyzer.detectors.python import PythonDetector
-from ai_infra.analyzer.detectors.node import NodeDetector
 from ai_infra.analyzer.detectors.go import GoDetector
-
+from ai_infra.analyzer.detectors.node import NodeDetector
+from ai_infra.analyzer.detectors.python import PythonDetector
 
 # ---------------------------------------------------------------------------
 # Python detector

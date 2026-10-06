@@ -37,8 +37,9 @@ build-{{ svc.name }}:
     DOCKER_TLS_CERTDIR: "/certs"
   script:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    - docker build -t $REGISTRY/$IMAGE_PREFIX/{{ svc.name }}:$CI_COMMIT_SHA -f Dockerfile.{{ svc.name }} .
+    - docker build -t $REGISTRY/$IMAGE_PREFIX/{{ svc.name }}:$CI_COMMIT_SHA -t $REGISTRY/$IMAGE_PREFIX/{{ svc.name }}:latest -f Dockerfile.{{ svc.name }} .
     - docker push $REGISTRY/$IMAGE_PREFIX/{{ svc.name }}:$CI_COMMIT_SHA
+    - docker push $REGISTRY/$IMAGE_PREFIX/{{ svc.name }}:latest
 {% endfor %}
 
 {% if cicd.auto_deploy %}
@@ -47,6 +48,9 @@ deploy:
   image: bitnami/kubectl:latest
   script:
     - kubectl apply -f k8s/
+{% for svc in app_services %}
+    - kubectl set image deployment/{{ svc.name }} {{ svc.name }}=$REGISTRY/$IMAGE_PREFIX/{{ svc.name }}:$CI_COMMIT_SHA
+{% endfor %}
   only:
     - main
   environment:
