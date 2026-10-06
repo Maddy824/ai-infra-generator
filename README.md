@@ -51,8 +51,8 @@ That's it. Your repo now has Dockerfiles, Compose, Kubernetes manifests, and mor
 
 | Target | Output | When |
 |---|---|---|
-| `compose` | Dockerfiles + docker-compose.yml | Always |
-| `k8s` | Deployments, Services, Ingress, HPA, ConfigMaps, Secrets | Always |
+| `compose` | Multi-stage Dockerfiles, docker-compose.yml, `.env.example`, `.dockerignore` (only if you don't have one) | Always |
+| `k8s` | Deployments (with health probes and dependency wait), Services, Ingress, HPA, PersistentVolumeClaims, ConfigMaps, Secrets | Always |
 | `ci` | CI/CD pipelines (GitHub Actions, GitLab CI, Bitbucket, CircleCI) | When `cicd.providers` is set |
 | `helm` | Chart.yaml, values.yaml, templates/ | When `helm.enabled` is true |
 | `iac` | Terraform main.tf for EKS / GKE / AKS | When `iac.enabled` is true |
@@ -119,6 +119,12 @@ AI_INFRA_LLM_BACKEND=gemini GEMINI_API_KEY=AI... ai-infra plan /path/to/repo
 | `AI_INFRA_LLM_TIMEOUT` | `300` | Request timeout in seconds |
 | `AI_INFRA_LLM_MAX_TOKENS` | `16000` | Max tokens per response (Claude) |
 | `AI_INFRA_LLM_MAX_RETRIES` | `2` | Retries on validation failure |
+
+### How images flow from CI to the cluster
+
+Services of type `app` and `worker` are built from your repo (`Dockerfile.<service>`). CI pushes each one as `<registry>/<project>/<service>:<commit-sha>` and `:latest`. The Kubernetes manifests and Helm values reference `:latest`. Each deploy step applies the manifests and then pins every deployment to the commit's image with `kubectl set image`. The Bitbucket pipeline is the exception: it only applies the manifests, so the deployments keep running `:latest`. Databases and caches use their stock images.
+
+When there is more than one app service, the first one is served at `routing.domain` and each of the others gets its own subdomain (`<service>.<domain>`).
 
 ---
 

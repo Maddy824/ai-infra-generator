@@ -7,6 +7,11 @@ metadata:
     project: {{ model.project_name }}
 spec:
   replicas: {{ svc.sizing.replicas }}
+{% if svc.volumes %}
+  # ReadWriteOnce volumes can't be attached to the old and new pod at once.
+  strategy:
+    type: Recreate
+{% endif %}
   selector:
     matchLabels:
       app: {{ svc.name }}
@@ -16,19 +21,19 @@ spec:
         app: {{ svc.name }}
         project: {{ model.project_name }}
     spec:
-{% if svc.depends_on %}
+{% if svc.wait_for %}
       initContainers:
-{% for dep in svc.depends_on %}
-        - name: wait-for-{{ dep }}
+{% for dep in svc.wait_for %}
+        - name: wait-for-{{ dep.name }}
           image: busybox:1.36
-          command: ['sh', '-c', 'until nc -z {{ dep }} 1; do echo waiting for {{ dep }}; sleep 2; done']
+          command: ['sh', '-c', 'until nc -z {{ dep.name }} {{ dep.port }}; do echo waiting for {{ dep.name }}; sleep 2; done']
 {% endfor %}
 {% endif %}
       containers:
         - name: {{ svc.name }}
-          image: {{ svc.image }}
-{% if svc.entrypoint %}
-          command: ["/bin/sh", "-c", "{{ svc.entrypoint }}"]
+          image: {{ svc.deploy_image }}
+{% if svc.entrypoint and not svc.built %}
+          command: ["/bin/sh", "-c", {{ svc.entrypoint | tojson }}]
 {% endif %}
 {% if svc.ports %}
           ports:
@@ -37,25 +42,41 @@ spec:
               protocol: {{ port.protocol }}
 {% endfor %}
 {% endif %}
+{% if svc.probe_port %}
+          readinessProbe:
+            tcpSocket:
+              port: {{ svc.probe_port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: {{ svc.probe_port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+{% endif %}
           resources:
             requests:
               cpu: {{ svc.sizing.cpu_requests }}
               memory: {{ svc.sizing.memory_requests }}
-{% if model.capabilities.needs_gpu %}
+{% if model.capabilities.needs_gpu and svc.built %}
               nvidia.com/gpu: "1"
 {% endif %}
             limits:
               cpu: {{ svc.sizing.cpu_limits }}
               memory: {{ svc.sizing.memory_limits }}
-{% if model.capabilities.needs_gpu %}
+{% if model.capabilities.needs_gpu and svc.built %}
               nvidia.com/gpu: "1"
+{% endif %}
+{% if svc.built %}
+          securityContext:
+            allowPrivilegeEscalation: false
 {% endif %}
 {% if svc.env %}
           env:
 {% for env_name, env_var in svc.env.items() %}
 {% if env_var.kind == "literal" %}
             - name: {{ env_name }}
-              value: "{{ env_var.value }}"
+              value: {{ env_var.value | tojson }}
 {% elif env_var.kind == "ref" %}
             - name: {{ env_name }}
               valueFrom:
@@ -76,6 +97,9 @@ spec:
 {% for vol in svc.volumes %}
             - name: {{ vol.name }}
               mountPath: {{ vol.mount_path }}
+              # A subdirectory, because fresh cloud volumes contain lost+found,
+              # which makes databases refuse to initialise the mount root.
+              subPath: {{ vol.name }}
 {% endfor %}
       volumes:
 {% for vol in svc.volumes %}

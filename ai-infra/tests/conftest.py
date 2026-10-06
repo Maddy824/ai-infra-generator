@@ -187,3 +187,12 @@ def go_app_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return tmp_path
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help="Rewrite golden snapshot files from the current generator output.",
+    )

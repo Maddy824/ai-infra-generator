@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ claim }}
+  labels:
+    project: {{ model.project_name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ model.cluster_assumptions.storage_class }}
+  resources:
+    requests:
+      storage: {{ size }}

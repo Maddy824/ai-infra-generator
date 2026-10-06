@@ -31,8 +31,9 @@ pipelines:
           - docker
         script:
           - docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD {{ cicd.registry }}
-          - docker build -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:$BITBUCKET_COMMIT -f Dockerfile.{{ svc.name }} .
+          - docker build -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:$BITBUCKET_COMMIT -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:latest -f Dockerfile.{{ svc.name }} .
           - docker push {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:$BITBUCKET_COMMIT
+          - docker push {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:latest
 {% endfor %}
 
 {% if cicd.auto_deploy %}
@@ -56,6 +57,7 @@ pipelines:
             - docker
           script:
             - docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD {{ cicd.registry }}
-            - docker build -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:$BITBUCKET_COMMIT -f Dockerfile.{{ svc.name }} .
+            - docker build -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:$BITBUCKET_COMMIT -t {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:latest -f Dockerfile.{{ svc.name }} .
             - docker push {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:$BITBUCKET_COMMIT
+            - docker push {{ cicd.registry }}/{{ model.project_name }}/{{ svc.name }}:latest
 {% endfor %}

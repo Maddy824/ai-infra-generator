@@ -11,7 +11,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 
-from ai_infra.models.infra_model import InfraModel
+from ai_infra.models.infra_model import InfraModel, ServiceModel
 from ai_infra.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,84 @@ def _wrap(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Template data -- the model dump plus values derived from it
+# ---------------------------------------------------------------------------
+
+_RUNTIME_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("python", ("python", "pypy")),
+    ("node", ("node",)),
+    ("go", ("golang",)),
+    ("java", ("maven", "gradle", "openjdk", "eclipse-temurin", "amazoncorretto")),
+)
+
+
+def _runtime(image: str) -> str:
+    """Infer the language runtime from a base image like ``python:3.12-slim``."""
+    name = image.rsplit("/", 1)[-1].split(":", 1)[0].split("@", 1)[0].lower()
+    for runtime, prefixes in _RUNTIME_PREFIXES:
+        if name.startswith(prefixes):
+            return runtime
+    return "generic"
+
+
+def _is_built(svc: ServiceModel) -> bool:
+    """App and worker services are built from the repo; others use stock images."""
+    return svc.type in ("app", "worker")
+
+
+def _service_data(model: InfraModel, svc: ServiceModel) -> dict[str, Any]:
+    """Dump *svc* for templates, adding derived fields.
+
+    - ``built``: whether the image is built from this repo (``Dockerfile.<name>``)
+    - ``deploy_image``: what Kubernetes/Helm should run -- the image CI pushes
+      for built services, the stock image otherwise
+    - ``runtime``: python | node | go | java | generic
+    - ``probe_port``: first TCP port, used for health probes
+    - ``run_as_root``: the service binds a privileged port, so the image
+      must not drop to a non-root user
+    - ``wait_for``: ``[{name, port}]`` for dependencies that expose a port
+    """
+    by_name = {s.name: s for s in model.services}
+    built = _is_built(svc)
+    tcp_ports = [p.container for p in svc.ports if p.protocol == "TCP"]
+    wait_for = [
+        {"name": dep, "port": by_name[dep].ports[0].container}
+        for dep in svc.depends_on
+        if dep in by_name and by_name[dep].ports
+    ]
+    data = svc.model_dump()
+    data.update(
+        built=built,
+        deploy_image=(
+            f"{model.cicd.registry}/{model.project_name}/{svc.name}:latest" if built else svc.image
+        ),
+        runtime=_runtime(svc.image),
+        probe_port=tcp_ports[0] if tcp_ports else None,
+        # Binding ports < 1024 needs root inside the container.
+        run_as_root=any(p.container < 1024 for p in svc.ports),
+        wait_for=wait_for,
+    )
+    return data
+
+
+def _env_refs(model: InfraModel, kinds: tuple[str, ...]) -> dict[str, str]:
+    """Map env var name -> ref for every env var of the given *kinds*."""
+    refs: dict[str, str] = {}
+    for svc in model.services:
+        for env_name, env_var in svc.env.items():
+            if env_var.kind in kinds:
+                refs[env_name] = env_var.ref
+    return refs
+
+
+def _model_data(model: InfraModel) -> dict[str, Any]:
+    """Dump *model* for templates, with enriched service entries."""
+    data = model.model_dump()
+    data["services"] = [_service_data(model, s) for s in model.services]
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Generator
 # ---------------------------------------------------------------------------
 
@@ -113,7 +191,7 @@ class Generator:
         self.skipped: list[Path] = []
 
     def _write_if_changed(
-        self, path: Path, content: str, force: bool = False,
+        self, path: Path, content: str, force: bool = False, create_only: bool = False,
     ) -> bool:
         """Write *content* to *path* only if it differs from what's on disk.
 
@@ -122,8 +200,15 @@ class Generator:
         since ai-infra last generated it -- in which case it is recorded in
         ``self.skipped``.  Otherwise the file is written, its state entry is
         marked clean, and ``True`` is returned.
+
+        With *create_only*, a file that already exists and was not written by
+        ai-infra (e.g. the project's own ``.dockerignore``) is never touched.
         """
         rel = path.relative_to(self.repo_path).as_posix()
+        if create_only and path.exists() and not (
+            self._state.exists() and self._state.is_tracked(rel)
+        ):
+            return False
         if not force and path.exists():
             existing = path.read_text(encoding="utf-8")
             if existing == content:
@@ -207,17 +292,35 @@ class Generator:
             path = self.repo_path / f"Dockerfile.{svc.name}"
             if self._write_if_changed(path, tmpl.render(**ctx), self._force):
                 generated.append(path)
+
+        # Keep VCS data, local envs, secrets and build output out of the
+        # build context -- but never clobber the project's own ignore file.
+        if any(_is_built(s) for s in model.services):
+            tmpl = self.env.get_template("docker/dockerignore.j2")
+            path = self.repo_path / ".dockerignore"
+            if self._write_if_changed(path, tmpl.render(), self._force, create_only=True):
+                generated.append(path)
         return generated
 
     # -- Docker Compose ----------------------------------------------------
 
     def _generate_compose(self, model: InfraModel) -> list[Path]:
-        model_data = _wrap(model.model_dump())
+        generated: list[Path] = []
+        model_data = _wrap(_model_data(model))
         tmpl = self.env.get_template("compose/docker-compose.yml.j2")
         path = self.repo_path / "docker-compose.yml"
         if self._write_if_changed(path, tmpl.render(model=model_data), self._force):
-            return [path]
-        return []
+            generated.append(path)
+
+        # Compose interpolates ref/secret env vars from .env -- document
+        # which ones are needed.
+        env_refs = _env_refs(model, ("ref", "secret"))
+        if env_refs:
+            tmpl = self.env.get_template("compose/env.example.j2")
+            path = self.repo_path / ".env.example"
+            if self._write_if_changed(path, tmpl.render(env_refs=env_refs), self._force):
+                generated.append(path)
+        return generated
 
     # -- Kubernetes --------------------------------------------------------
 
@@ -226,7 +329,7 @@ class Generator:
         k8s_dir = self.repo_path / "k8s"
         k8s_dir.mkdir(parents=True, exist_ok=True)
 
-        model_data = _wrap(model.model_dump())
+        model_data = _wrap(_model_data(model))
 
         for svc in model.services:
             ctx = self._service_context(model, svc)
@@ -251,20 +354,35 @@ class Generator:
                 if self._write_if_changed(path, tmpl.render(**ctx), self._force):
                     generated.append(path)
 
-        # Ingress (for app services)
+        # Ingress (for app services).  The first app is served at the root
+        # domain; any others get a subdomain each, so no app has its paths
+        # rewritten or shadowed.
         app_services = [s for s in model.services if s.type == "app" and s.ports]
         if app_services:
+            domain = model.routing.domain
+            routes = []
+            for i, svc in enumerate(app_services):
+                data = _service_data(model, svc)
+                data["host"] = domain if i == 0 else f"{svc.name}.{domain}"
+                routes.append(_wrap(data))
             tmpl = self.env.get_template("k8s/ingress.yaml.j2")
             path = k8s_dir / "ingress.yaml"
-            if self._write_if_changed(path, tmpl.render(model=model_data, app_services=[_wrap(s.model_dump()) for s in app_services]), self._force):
+            if self._write_if_changed(path, tmpl.render(model=model_data, app_services=routes), self._force):
+                generated.append(path)
+
+        # PersistentVolumeClaims referenced by the deployments' volumes
+        claims: dict[str, str] = {}
+        for svc in model.services:
+            for vol in svc.volumes:
+                claims.setdefault(vol.name, "10Gi" if svc.sizing.scale != "dev" else "1Gi")
+        for claim, size in claims.items():
+            tmpl = self.env.get_template("k8s/pvc.yaml.j2")
+            path = k8s_dir / f"{claim}-pvc.yaml"
+            if self._write_if_changed(path, tmpl.render(model=model_data, claim=claim, size=size), self._force):
                 generated.append(path)
 
         # ConfigMap (for ref envs)
-        ref_envs = {}
-        for svc in model.services:
-            for env_name, env_var in svc.env.items():
-                if env_var.kind == "ref":
-                    ref_envs[env_name] = env_var.ref
+        ref_envs = _env_refs(model, ("ref",))
         if ref_envs:
             tmpl = self.env.get_template("k8s/configmap.yaml.j2")
             path = k8s_dir / "configmap.yaml"
@@ -272,11 +390,7 @@ class Generator:
                 generated.append(path)
 
         # Secret placeholder (for secret envs)
-        secret_envs = {}
-        for svc in model.services:
-            for env_name, env_var in svc.env.items():
-                if env_var.kind == "secret":
-                    secret_envs[env_name] = env_var.ref
+        secret_envs = _env_refs(model, ("secret",))
         if secret_envs:
             tmpl = self.env.get_template("k8s/secret.yaml.j2")
             path = k8s_dir / "secret.yaml"
@@ -290,7 +404,7 @@ class Generator:
     def _generate_ci(self, model: InfraModel) -> list[Path]:
         generated: list[Path] = []
         cicd = model.cicd
-        model_data = _wrap(model.model_dump())
+        model_data = _wrap(_model_data(model))
 
         _CI_FILE_MAP = {
             "github_actions": ("ci/github-actions.yml.j2", ".github/workflows/deploy.yml"),
@@ -303,7 +417,7 @@ class Generator:
         ctx = {
             "model": model_data,
             "cicd": _wrap(cicd.model_dump()),
-            "app_services": [_wrap(s.model_dump()) for s in app_services],
+            "app_services": [_wrap(_service_data(model, s)) for s in app_services],
         }
 
         for provider in cicd.providers:
@@ -329,7 +443,7 @@ class Generator:
         templates_dir = chart_dir / "templates"
         templates_dir.mkdir(parents=True, exist_ok=True)
 
-        model_data = _wrap(model.model_dump())
+        model_data = _wrap(_model_data(model))
 
         # Chart.yaml
         tmpl = self.env.get_template("helm/Chart.yaml.j2")
@@ -373,7 +487,7 @@ class Generator:
     def _generate_iac(self, model: InfraModel) -> list[Path]:
         generated: list[Path] = []
         iac = model.iac
-        model_data = _wrap(model.model_dump())
+        model_data = _wrap(_model_data(model))
 
         if iac.tool != "terraform":
             logger.warning("IaC tool '%s' not yet supported; only 'terraform' is implemented.", iac.tool)
@@ -405,7 +519,7 @@ class Generator:
     def _generate_monitoring(self, model: InfraModel) -> list[Path]:
         generated: list[Path] = []
         mon = model.monitoring
-        model_data = _wrap(model.model_dump())
+        model_data = _wrap(_model_data(model))
         mon_dir = self.repo_path / "monitoring"
         mon_dir.mkdir(parents=True, exist_ok=True)
 
@@ -416,7 +530,7 @@ class Generator:
                 tmpl = self.env.get_template("monitoring/servicemonitor.yaml.j2")
                 ctx = {
                     "model": model_data,
-                    "svc": _wrap(svc.model_dump()),
+                    "svc": _wrap(_service_data(model, svc)),
                     "monitoring": _wrap(mon.model_dump()),
                 }
                 path = mon_dir / f"{svc.name}-servicemonitor.yaml"
@@ -427,7 +541,7 @@ class Generator:
             tmpl = self.env.get_template("monitoring/alerting-rules.yaml.j2")
             ctx = {
                 "model": model_data,
-                "app_services": [_wrap(s.model_dump()) for s in app_services],
+                "app_services": [_wrap(_service_data(model, s)) for s in app_services],
                 "monitoring": _wrap(mon.model_dump()),
                 "thresholds": _wrap(mon.alert_thresholds),
             }
@@ -439,7 +553,7 @@ class Generator:
             tmpl = self.env.get_template("monitoring/grafana-dashboard.json.j2")
             ctx = {
                 "model": model_data,
-                "app_services": [_wrap(s.model_dump()) for s in app_services],
+                "app_services": [_wrap(_service_data(model, s)) for s in app_services],
                 "monitoring": _wrap(mon.model_dump()),
                 "thresholds": _wrap(mon.alert_thresholds),
             }
@@ -454,7 +568,7 @@ class Generator:
     def _generate_tenancy(self, model: InfraModel) -> list[Path]:
         generated: list[Path] = []
         mt = model.multi_tenancy
-        model_data = _wrap(model.model_dump())
+        model_data = _wrap(_model_data(model))
 
         for tenant in mt.tenants:
             ns = tenant.namespace or tenant.name
@@ -493,11 +607,9 @@ class Generator:
     # -- Helpers -----------------------------------------------------------
 
     @staticmethod
-    def _service_context(model: InfraModel, svc) -> dict:
+    def _service_context(model: InfraModel, svc: ServiceModel) -> dict:
         """Build a template context dict for a single service."""
-        model_data = _wrap(model.model_dump())
-        svc_data = _wrap(svc.model_dump())
         return {
-            "model": model_data,
-            "svc": svc_data,
+            "model": _wrap(_model_data(model)),
+            "svc": _wrap(_service_data(model, svc)),
         }

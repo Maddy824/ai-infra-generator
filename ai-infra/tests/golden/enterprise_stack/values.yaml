@@ -4,8 +4,7 @@ replicaCount: 1
 
 web:
   enabled: true
-  image: python:3.11-slim
-  command: "uvicorn main:app --host 0.0.0.0 --port 8000"
+  image: ghcr.io/enterprise-app/web:latest
   replicas: 2
   resources:
     requests:

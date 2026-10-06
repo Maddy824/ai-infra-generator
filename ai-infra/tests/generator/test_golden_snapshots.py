@@ -5,13 +5,14 @@ byte-for-byte against checked-in golden files to detect regressions.
 
 To update golden files after an intentional template change, run:
     python -m pytest tests/generator/test_golden_snapshots.py --update-golden
-
-Or delete the old golden files and re-run the generation script.
+and review the diff before committing.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from ai_infra.generator.generator import Generator
 from ai_infra.models.infra_model import (
@@ -71,9 +72,21 @@ def _enterprise_model() -> InfraModel:
     )
 
 
+_UPDATE_GOLDEN = False
+
+
+@pytest.fixture(autouse=True)
+def _golden_mode(request):
+    global _UPDATE_GOLDEN
+    _UPDATE_GOLDEN = request.config.getoption("--update-golden")
+
+
 def _assert_matches_golden(generated_path: Path, golden_name: str) -> None:
     """Assert that a generated file matches its golden snapshot."""
     golden_path = _GOLDEN_DIR / golden_name
+    if _UPDATE_GOLDEN:
+        golden_path.write_text(generated_path.read_text(encoding="utf-8"), encoding="utf-8")
+        return
     assert golden_path.exists(), f"Golden file missing: {golden_path}"
 
     generated = generated_path.read_text(encoding="utf-8")
@@ -83,7 +96,7 @@ def _assert_matches_golden(generated_path: Path, golden_name: str) -> None:
         f"Generated output does not match golden snapshot.\n"
         f"  Generated: {generated_path}\n"
         f"  Golden:    {golden_path}\n"
-        f"Run the golden snapshot generation script to update."
+        f"If the change is intended, re-run with --update-golden."
     )
 
 
@@ -210,3 +223,26 @@ class TestCIGolden:
             tmp_path / ".gitlab-ci.yml",
             "gitlab-ci.yml",
         )
+
+
+# ---------------------------------------------------------------------------
+# Core output snapshots (Dockerfile, compose, k8s, GitHub Actions)
+# ---------------------------------------------------------------------------
+
+
+class TestCoreGolden:
+    def test_compose_outputs(self, tmp_path: Path):
+        Generator(tmp_path).generate(_enterprise_model(), target="compose")
+        _assert_matches_golden(tmp_path / "Dockerfile.web", "Dockerfile.web")
+        _assert_matches_golden(tmp_path / "docker-compose.yml", "docker-compose.yml")
+        _assert_matches_golden(tmp_path / ".env.example", "env.example")
+        _assert_matches_golden(tmp_path / ".dockerignore", "dockerignore")
+
+    def test_k8s_outputs(self, tmp_path: Path):
+        Generator(tmp_path).generate(_enterprise_model(), target="k8s")
+        for name in ("web-deployment.yaml", "postgres-deployment.yaml", "ingress.yaml", "pgdata-pvc.yaml"):
+            _assert_matches_golden(tmp_path / "k8s" / name, name)
+
+    def test_github_actions(self, tmp_path: Path):
+        Generator(tmp_path).generate(_enterprise_model(), target="ci")
+        _assert_matches_golden(tmp_path / ".github" / "workflows" / "deploy.yml", "github-actions.yml")
