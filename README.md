@@ -113,10 +113,22 @@ AI_INFRA_LLM_BACKEND=gemini GEMINI_API_KEY=AI... ai-infra plan /path/to/repo
 | `AI_INFRA_OLLAMA_URL` | `http://localhost:11434` | Ollama server address |
 | `AI_INFRA_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Which Ollama model to use |
 | `AI_INFRA_OPENAI_MODEL` | `gpt-4o` | OpenAI model |
-| `AI_INFRA_CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Claude model |
+| `AI_INFRA_CLAUDE_MODEL` | `claude-opus-5-5` | Claude model |
+| `AI_INFRA_CLAUDE_FALLBACKS` | `true` | Let the Claude API retry a declined request on its recommended fallback model |
 | `AI_INFRA_GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model |
-| `AI_INFRA_LLM_TIMEOUT` | `30` | Request timeout in seconds |
+| `AI_INFRA_LLM_TIMEOUT` | `300` | Request timeout in seconds |
+| `AI_INFRA_LLM_MAX_TOKENS` | `16000` | Max tokens per response (Claude) |
 | `AI_INFRA_LLM_MAX_RETRIES` | `2` | Retries on validation failure |
+
+---
+
+## Regenerating Safely
+
+ai-infra records a hash of every file it writes in `.ai-infra/state.json`. On later runs:
+
+- Files whose rendered content hasn't changed are left untouched.
+- Files you have **edited by hand** since the last generation are **skipped** (and listed in the output) so your changes aren't lost. Pass `--force` to overwrite them.
+- `ai-infra status` lists generated files that were modified or deleted.
 
 ---
 
@@ -193,8 +205,10 @@ uvicorn ai_infra.api.app:app --reload --port 8000
 | `POST` | `/api/plan` | Run AI planner |
 | `POST` | `/api/generate` | Generate configs |
 | `POST` | `/api/fix` | Run fix loop |
-| `GET` | `/api/stream/*` | SSE streaming variants |
+| `GET` | `/api/stream/*` | SSE streaming variants (`status` → `result` → `done`, or an `error` event on failure) |
 | `GET` | `/health` | Health check |
+
+Set `AI_INFRA_CORS_ORIGINS` to a comma-separated list of allowed origins to restrict browser access (default: any origin).
 
 ---
 

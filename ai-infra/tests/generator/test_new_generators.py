@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from ai_infra.generator.generator import Generator
 from ai_infra.models.infra_model import (
     CICDModel,
@@ -23,7 +21,6 @@ from ai_infra.models.infra_model import (
     TenantModel,
     VolumeMount,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

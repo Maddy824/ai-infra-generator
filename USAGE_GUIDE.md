@@ -219,7 +219,7 @@ Generating infrastructure (target: all)
 |---|---|---|
 | `REPO_PATH` | `.` | Path to the repository |
 | `--target` | `compose` | What to generate (see table below) |
-| `--force` | `false` | Regenerate all files even if unchanged |
+| `--force` | `false` | Rewrite all files, including ones you edited by hand since the last generation |
 
 **Available targets:**
 
@@ -264,7 +264,8 @@ All settings use the `AI_INFRA_` prefix as environment variables.
 | Variable | Default | Options |
 |---|---|---|
 | `AI_INFRA_LLM_BACKEND` | `ollama` | `ollama`, `openai`, `claude`, `gemini` |
-| `AI_INFRA_LLM_TIMEOUT` | `30` | Seconds before timeout |
+| `AI_INFRA_LLM_TIMEOUT` | `300` | Seconds before timeout |
+| `AI_INFRA_LLM_MAX_TOKENS` | `16000` | Max tokens per response (Claude) |
 | `AI_INFRA_LLM_MAX_RETRIES` | `2` | Retries on validation failure |
 
 ### Ollama (Local AI — Free)
@@ -287,7 +288,8 @@ All settings use the `AI_INFRA_` prefix as environment variables.
 | Variable | Default |
 |---|---|
 | `ANTHROPIC_API_KEY` | _(required)_ |
-| `AI_INFRA_CLAUDE_MODEL` | `claude-sonnet-4-20250514` |
+| `AI_INFRA_CLAUDE_MODEL` | `claude-opus-5-5` |
+| `AI_INFRA_CLAUDE_FALLBACKS` | `true` — retry a declined request on the API's recommended fallback model; set `false` for models that don't support it |
 
 ### Gemini (Google)
 
@@ -567,7 +569,14 @@ eventSource.addEventListener('result', (e) => {
 eventSource.addEventListener('done', () => {
   eventSource.close();
 });
+
+eventSource.addEventListener('error', (e) => {
+  if (e.data) console.error('Failed:', JSON.parse(e.data).detail);
+  eventSource.close();
+});
 ```
+
+Pass `&force=true` to `/api/stream/generate` to overwrite files edited by hand.
 
 ---
 
@@ -638,7 +647,7 @@ The LLM is struggling to produce valid JSON. Try:
 
 ### Generated files are not changing
 
-The generator uses hash-based caching to skip unchanged files. Use `--force` to regenerate:
+The generator skips files whose content is unchanged, and also skips files you edited by hand since the last generation (they are listed as "Skipped" in the output, and `ai-infra status` shows them). Use `--force` to overwrite them:
 
 ```bash
 ai-infra generate . --target all --force

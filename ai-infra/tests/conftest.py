@@ -8,25 +8,17 @@ from pathlib import Path
 import pytest
 
 from ai_infra.models.infra_model import (
-    CICDModel,
-    ClusterAssumptionsModel,
-    HelmModel,
-    IaCModel,
     InfraModel,
     LiteralEnv,
-    MonitoringModel,
-    MultiTenancyModel,
     PortMapping,
     RefEnv,
     RoutingModel,
     SecretEnv,
     ServiceModel,
     SizingModel,
-    TenantModel,
     VolumeMount,
 )
 from ai_infra.state.state_manager import StateManager
-
 
 # ---------------------------------------------------------------------------
 # Sample model builder

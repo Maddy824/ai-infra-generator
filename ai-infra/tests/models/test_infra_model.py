@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from pydantic import ValidationError
 
 from ai_infra.models.infra_model import (
     CICDModel,
-    ClusterAssumptionsModel,
     HelmModel,
     IaCModel,
     InfraModel,
@@ -23,9 +20,7 @@ from ai_infra.models.infra_model import (
     ServiceModel,
     SizingModel,
     TenantModel,
-    VolumeMount,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 # Path to the templates directory (sibling of this file)
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# Every value accepted by ``Generator.generate(target=...)``.
+TARGETS: tuple[str, ...] = (
+    "compose", "k8s", "ci", "helm", "iac", "monitoring", "tenancy", "all",
+)
+
 
 # ---------------------------------------------------------------------------
 # _ModelProxy -- attribute-style access for Jinja2 templates
@@ -39,7 +44,7 @@ class _ModelProxy:
             try:
                 value = self._data[name]
             except KeyError:
-                raise AttributeError(name)
+                raise AttributeError(name) from None
             return _wrap(value)
         raise AttributeError(name)
 
@@ -101,30 +106,43 @@ class Generator:
             lstrip_blocks=True,
         )
         self._state = StateManager(self.repo_path)
+        self._force = False
+        # Files left alone because they were edited by hand since the last
+        # generation.  Populated by ``generate()``; pass ``force=True`` to
+        # overwrite them.
+        self.skipped: list[Path] = []
 
     def _write_if_changed(
         self, path: Path, content: str, force: bool = False,
     ) -> bool:
         """Write *content* to *path* only if it differs from what's on disk.
 
-        When *force* is ``False`` and the file already exists with identical
-        content, the write is skipped and ``False`` is returned.  Otherwise
-        the file is written, its state entry is marked clean, and ``True`` is
-        returned.
+        When *force* is ``False`` the write is skipped (and ``False`` returned)
+        if the file already has identical content, or if it was hand-edited
+        since ai-infra last generated it -- in which case it is recorded in
+        ``self.skipped``.  Otherwise the file is written, its state entry is
+        marked clean, and ``True`` is returned.
         """
-        path.parent.mkdir(parents=True, exist_ok=True)
+        rel = path.relative_to(self.repo_path).as_posix()
         if not force and path.exists():
             existing = path.read_text(encoding="utf-8")
             if existing == content:
                 return False
+            if self._state.exists() and self._state.was_modified(rel):
+                logger.warning(
+                    "Skipping %s: modified since last generation (use --force to overwrite).",
+                    rel,
+                )
+                self.skipped.append(path)
+                return False
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         # Track the file in state.json for incremental regeneration.
-        rel = str(path.relative_to(self.repo_path))
         try:
             if self._state.exists():
                 self._state.mark_clean(rel)
         except Exception:  # noqa: BLE001
-            pass  # non-critical; don't fail generation over state tracking
+            logger.debug("Could not record %s in state.json", rel, exc_info=True)
         return True
 
     def generate(
@@ -139,8 +157,14 @@ class Generator:
         the last generation are skipped (incremental regeneration).
 
         Returns a list of paths to the files that were actually written.
+        Raises ``ValueError`` for an unknown *target*.
         """
+        if target not in TARGETS:
+            raise ValueError(
+                f"Invalid target '{target}'. Choose from: {', '.join(TARGETS)}"
+            )
         self._force = force
+        self.skipped = []
         generated: list[Path] = []
 
         if target in ("compose", "all"):

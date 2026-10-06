@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # ---------------------------------------------------------------------------
 # Version constant
@@ -54,7 +53,7 @@ class SecretEnv(BaseModel):
 
 
 EnvVar = Annotated[
-    Union[LiteralEnv, RefEnv, SecretEnv],
+    LiteralEnv | RefEnv | SecretEnv,
     Field(discriminator="kind"),
 ]
 
@@ -590,7 +589,7 @@ class InfraModel(BaseModel):
         return out_path
 
     @classmethod
-    def load(cls, project_root: str | Path) -> "InfraModel":
+    def load(cls, project_root: str | Path) -> InfraModel:
         """Load and validate an ``InfraModel`` from disk.
 
         Raises ``FileNotFoundError`` if the file is missing and

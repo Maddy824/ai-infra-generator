@@ -50,3 +50,7 @@ STATUS.md
 implementation_plan.md
 ARCHITECTURE_HANDOFF.md
 DEEP_DIVE_ARCHITECTURE.md
+
+# Stray diff/patch exports
+*.patch
+diff.txt

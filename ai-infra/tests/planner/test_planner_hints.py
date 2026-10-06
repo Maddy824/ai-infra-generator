@@ -7,7 +7,6 @@ through Pydantic validation and atomic state writes.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -29,7 +28,6 @@ from ai_infra.models.infra_model import (
 )
 from ai_infra.planner.planner import Planner
 from ai_infra.state.state_manager import StateManager
-
 
 # ---------------------------------------------------------------------------
 # Helpers
