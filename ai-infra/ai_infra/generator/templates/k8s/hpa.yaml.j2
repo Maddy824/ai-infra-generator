@@ -1,15 +1,15 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ svc.name }}-hpa
+  name: {{ (svc.name ~ "-hpa") | tojson }}
   labels:
-    app: {{ svc.name }}
-    project: {{ model.project_name }}
+    app: {{ svc.name | tojson }}
+    project: {{ model.project_name | tojson }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ svc.name }}
+    name: {{ svc.name | tojson }}
 {% if svc.sizing.scale == "prod" %}
   minReplicas: 2
   maxReplicas: 10

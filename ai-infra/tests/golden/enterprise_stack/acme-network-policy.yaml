@@ -1,11 +1,11 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: acme-isolation
-  namespace: acme
+  name: "acme-isolation"
+  namespace: "acme"
   labels:
-    project: enterprise-app
-    tenant: acme
+    project: "enterprise-app"
+    tenant: "acme"
 spec:
   podSelector: {}
   policyTypes:

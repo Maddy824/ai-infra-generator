@@ -17,21 +17,36 @@ _INFRA_FILES = (
 )
 
 
-def safe_read(path: Path) -> str | None:
-    """Read a file if it exists and is within the analyzer size limit."""
+def contained_path(repo_path: Path, path: Path) -> Path | None:
+    """Resolve a candidate only if it stays inside the analyzed repository."""
     try:
-        if not path.is_file():
+        resolved = path.resolve(strict=True)
+        return resolved if resolved.is_relative_to(repo_path.resolve()) else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def repo_file(repo_path: Path, path: Path) -> bool:
+    resolved = contained_path(repo_path, path)
+    return resolved is not None and resolved.is_file()
+
+
+def safe_read(repo_path: Path, path: Path) -> str | None:
+    """Read a contained regular file within the analyzer size limit."""
+    resolved = contained_path(repo_path, path)
+    if resolved is None:
+        return None
+    try:
+        if not resolved.is_file() or resolved.stat().st_size > settings.ANALYZER_MAX_FILE_SIZE:
             return None
-        if path.stat().st_size > settings.ANALYZER_MAX_FILE_SIZE:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
+        return resolved.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
 
 
 def check_existing_infra(repo_path: Path) -> list[str]:
     """Return the container/compose files already present at the repo root."""
-    return [name for name in _INFRA_FILES if (repo_path / name).is_file()]
+    return [name for name in _INFRA_FILES if repo_file(repo_path, repo_path / name)]
 
 
 class BaseDetector(ABC):

@@ -3,9 +3,9 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: {{ model.project_name }}-alerts
+  name: {{ (model.project_name ~ "-alerts") | tojson }}
   labels:
-    project: {{ model.project_name }}
+    project: {{ model.project_name | tojson }}
 spec:
   groups:
 {% for svc in app_services %}
@@ -17,7 +17,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: {{ svc.name }}
+            service: {{ svc.name | tojson }}
           annotations:
             summary: "High CPU usage on {{ svc.name }}"
             description: "CPU usage is above {{ thresholds.cpu_percent }}% for more than 5 minutes."
@@ -28,7 +28,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: {{ svc.name }}
+            service: {{ svc.name | tojson }}
           annotations:
             summary: "High memory usage on {{ svc.name }}"
             description: "Memory usage is above {{ thresholds.memory_percent }}% for more than 5 minutes."
@@ -40,7 +40,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            service: {{ svc.name }}
+            service: {{ svc.name | tojson }}
           annotations:
             summary: "High 5xx error rate on {{ svc.name }}"
             description: "Error rate is above {{ thresholds.error_rate_5xx }}% for more than 5 minutes."
@@ -51,7 +51,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: {{ svc.name }}
+            service: {{ svc.name | tojson }}
           annotations:
             summary: "High p99 latency on {{ svc.name }}"
             description: "p99 latency is above {{ thresholds.p99_latency_ms }}ms for more than 5 minutes."
@@ -62,7 +62,7 @@ spec:
           for: 10m
           labels:
             severity: warning
-            service: {{ svc.name }}
+            service: {{ svc.name | tojson }}
           annotations:
             summary: "Frequent pod restarts for {{ svc.name }}"
             description: "Pod has restarted more than 3 times in the last hour."

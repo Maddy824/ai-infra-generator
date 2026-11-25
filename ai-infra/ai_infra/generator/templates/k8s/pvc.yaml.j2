@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ claim }}
+  name: {{ claim | tojson }}
   labels:
-    project: {{ model.project_name }}
+    project: {{ model.project_name | tojson }}
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: {{ model.cluster_assumptions.storage_class }}
+  storageClassName: {{ model.cluster_assumptions.storage_class | tojson }}
   resources:
     requests:
-      storage: {{ size }}
+      storage: {{ size | tojson }}

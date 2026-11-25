@@ -40,7 +40,7 @@ class Planner:
 
     # -- public API --------------------------------------------------------
 
-    def plan(self, analyzer_output: dict) -> InfraModel:
+    def plan(self, analyzer_output: dict, *, offline: bool = False) -> InfraModel:
         """Run the planning pipeline and return a validated InfraModel.
 
         On success the model and plan summary are persisted to ``.ai-infra/``.
@@ -48,6 +48,14 @@ class Planner:
         previous state is left untouched.
         """
         self.state.init_state_dir()
+
+        if offline:
+            from ai_infra.planner.offline import build_offline_model
+
+            model = build_offline_model(analyzer_output)
+            self.state.write_infra_model(model)
+            self.state.write_plan_summary(self._format_summary(model))
+            return model
 
         # Read optional user hints
         hints = self.state.read_hints()

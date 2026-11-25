@@ -3,9 +3,9 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: enterprise-app-alerts
+  name: "enterprise-app-alerts"
   labels:
-    project: enterprise-app
+    project: "enterprise-app"
 spec:
   groups:
     - name: web.rules
@@ -16,7 +16,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: web
+            service: "web"
           annotations:
             summary: "High CPU usage on web"
             description: "CPU usage is above 80.0% for more than 5 minutes."
@@ -27,7 +27,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: web
+            service: "web"
           annotations:
             summary: "High memory usage on web"
             description: "Memory usage is above 85.0% for more than 5 minutes."
@@ -39,7 +39,7 @@ spec:
           for: 5m
           labels:
             severity: critical
-            service: web
+            service: "web"
           annotations:
             summary: "High 5xx error rate on web"
             description: "Error rate is above 5.0% for more than 5 minutes."
@@ -50,7 +50,7 @@ spec:
           for: 5m
           labels:
             severity: warning
-            service: web
+            service: "web"
           annotations:
             summary: "High p99 latency on web"
             description: "p99 latency is above 500.0ms for more than 5 minutes."
@@ -61,7 +61,7 @@ spec:
           for: 10m
           labels:
             severity: warning
-            service: web
+            service: "web"
           annotations:
             summary: "Frequent pod restarts for web"
             description: "Pod has restarted more than 3 times in the last hour."

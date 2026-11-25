@@ -4,8 +4,8 @@ Three-layer pipeline:
 1. **Log parser** — maps raw logs to structured ``InfraError`` instances.
 2. **Planner (repair mode)** — receives structured errors, proposes targeted
    patches to the Infra Model (not full regeneration).
-3. **Targeted re-render** — only files affected by patched services are
-   regenerated.
+3. **Regeneration** — render all enabled targets and preflight protected files
+   before applying the patch.
 
 Supports ``--dry-run`` to preview changes without writing files.
 """
@@ -326,7 +326,7 @@ class FixLoop:
         self.repo_path = repo_path
         self.state = StateManager(repo_path)
 
-    def fix(self, log_path: Path, *, dry_run: bool = False) -> dict:
+    def fix(self, log_path: Path, *, dry_run: bool = False, force: bool = False) -> dict:
         """Run the full fix loop."""
         # 1. Read the current infra model
         try:
@@ -344,14 +344,15 @@ class FixLoop:
 
         if not errors:
             logger.info("No errors detected in logs.")
-            return {"errors": [], "changes": [], "files": []}
+            return {"errors": [], "changes": [], "files": [], "skipped": [], "status": "no_changes"}
 
         logger.info("Detected %d error(s): %s", len(errors), [(e.kind, e.component) for e in errors])
 
         # Write parsed errors to logs/ for audit trail
-        self.state.init_state_dir()
-        errors_json = json.dumps([asdict(e) for e in errors], indent=2)
-        self.state.write_atomic("logs/fix_errors.json", errors_json)
+        if not dry_run:
+            self.state.init_state_dir()
+            errors_json = json.dumps([asdict(e) for e in errors], indent=2)
+            self.state.write_atomic("logs/fix_errors.json", errors_json)
 
         # 3. Propose patches
         needs_llm = any(e.kind in ("image_pull", "build") for e in errors)
@@ -373,55 +374,39 @@ class FixLoop:
                 "errors": [asdict(e) for e in errors],
                 "changes": [],
                 "files": [],
+                "skipped": [],
+                "status": "no_changes",
             }
 
-        # 5. Apply or preview
-        written_files: list[str] = []
-        if dry_run:
-            logger.info("Dry run -- changes would be:")
-            for c in changes:
-                logger.info("  %s", c)
-        else:
-            # Write the patched model
-            self.state.write_infra_model(patched_model)
-
-            # Determine affected services and regenerate only those files
-            affected = _affected_services(model, patched_model)
-            if affected:
-                gen = Generator(self.repo_path)
-                files = gen.generate(patched_model, target="all", force=True)
-                written_files = [str(f) for f in files]
-            else:
-                written_files = []
-
-            # Log the fix
-            fix_log = {
-                "errors": [asdict(e) for e in errors],
-                "changes": changes,
-                "files_written": written_files,
-            }
-            self.state.write_atomic(
-                "logs/fix_result.json",
-                json.dumps(fix_log, indent=2),
-            )
-
-        return {
+        # 5. Apply or preview. Keep the original model until generation succeeds,
+        # so a retry proposes the same correction rather than compounding it.
+        result = {
             "errors": [asdict(e) for e in errors],
             "changes": changes,
-            "files": written_files,
+            "files": [],
+            "skipped": [],
+            "status": "dry_run" if dry_run else "applied",
         }
+        if dry_run:
+            return result
 
+        gen = Generator(self.repo_path)
+        try:
+            gen.generate(patched_model, target="all", force=force, require_all=True)
+            if gen.blocked:
+                result["status"] = "partial" if gen.written else "blocked"
+            else:
+                self.state.write_infra_model(patched_model)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("Fix regeneration failed; original model retained.")
+            result["status"] = "partial"
+            result["detail"] = str(exc)
 
-def _affected_services(old: InfraModel, new: InfraModel) -> set[str]:
-    """Return names of services that changed between two models."""
-    old_map = {s.name: s.model_dump() for s in old.services}
-    new_map = {s.name: s.model_dump() for s in new.services}
-
-    changed: set[str] = set()
-    all_names = set(old_map.keys()) | set(new_map.keys())
-
-    for name in all_names:
-        if old_map.get(name) != new_map.get(name):
-            changed.add(name)
-
-    return changed
+        result["files"] = [str(f) for f in gen.written]
+        result["skipped"] = [str(f) for f in gen.skipped]
+        result["blocked"] = [str(f) for f in gen.blocked]
+        self.state.write_atomic(
+            "logs/fix_result.json",
+            json.dumps({**result, "files_written": result["files"]}, indent=2),
+        )
+        return result

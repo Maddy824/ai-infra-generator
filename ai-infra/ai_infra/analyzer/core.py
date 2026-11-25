@@ -38,7 +38,7 @@ _CMD_RE = re.compile(r"^\s*(?:CMD|ENTRYPOINT)\s+(.+)$", re.MULTILINE)
 
 
 def _extract_dockerfile_info(repo_path: Path) -> dict | None:
-    content = safe_read(repo_path / "Dockerfile")
+    content = safe_read(repo_path, repo_path / "Dockerfile")
     if content is None:
         return None
     info: dict[str, object] = {}
@@ -124,6 +124,7 @@ def analyze(repo_path: Path) -> dict:
         merged["dockerfile_info"] = dockerfile_info
         if merged["detected_port"] is None and "port" in dockerfile_info:
             merged["detected_port"] = dockerfile_info["port"]
+    merged["project_name"] = repo_path.name
     state = StateManager(repo_path)
     state.init_state_dir()
     state.write_analyzer_output(merged)

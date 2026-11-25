@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: ResourceQuota
 metadata:
-  name: acme-quota
-  namespace: acme
+  name: "acme-quota"
+  namespace: "acme"
   labels:
-    project: enterprise-app
-    tenant: acme
+    project: "enterprise-app"
+    tenant: "acme"
 spec:
   hard:
     requests.cpu: "4"

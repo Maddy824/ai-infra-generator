@@ -8,6 +8,7 @@ from pathlib import Path
 from ai_infra.analyzer.detectors.base import (
     BaseDetector,
     check_existing_infra,
+    repo_file,
     safe_read,
 )
 
@@ -78,7 +79,7 @@ class PythonDetector(BaseDetector):
 
     def matches(self, repo_path: Path) -> bool:
         markers = ("requirements.txt", "pyproject.toml", "setup.py", "Pipfile")
-        return any((repo_path / m).is_file() for m in markers)
+        return any(repo_file(repo_path, repo_path / m) for m in markers)
 
     def detect(self, repo_path: Path) -> dict | None:
         if not self.matches(repo_path):
@@ -112,7 +113,7 @@ class PythonDetector(BaseDetector):
         deps: list[str] = []
 
         # requirements.txt
-        req_txt = safe_read(repo_path / "requirements.txt")
+        req_txt = safe_read(repo_path, repo_path / "requirements.txt")
         if req_txt is not None:
             for line in req_txt.splitlines():
                 line = line.strip()
@@ -122,7 +123,7 @@ class PythonDetector(BaseDetector):
 
         # pyproject.toml [project.dependencies]
         pyproject_path = repo_path / "pyproject.toml"
-        pyproject_txt = safe_read(pyproject_path)
+        pyproject_txt = safe_read(repo_path, pyproject_path)
         if pyproject_txt is not None:
             try:
                 import tomllib
@@ -148,11 +149,11 @@ class PythonDetector(BaseDetector):
         # Django has a clear entrypoint
         if framework == "django":
             manage = repo_path / "manage.py"
-            if manage.is_file():
+            if repo_file(repo_path, manage):
                 return "manage.py"
 
         for candidate in _ENTRYPOINT_CANDIDATES:
-            if (repo_path / candidate).is_file():
+            if repo_file(repo_path, repo_path / candidate):
                 return candidate
 
         return None
@@ -161,7 +162,7 @@ class PythonDetector(BaseDetector):
     def _detect_port(repo_path: Path, entrypoint: str | None) -> int | None:
         if entrypoint is None:
             return None
-        content = safe_read(repo_path / entrypoint)
+        content = safe_read(repo_path, repo_path / entrypoint)
         if content is None:
             return None
         for pat in _PORT_PATTERNS:

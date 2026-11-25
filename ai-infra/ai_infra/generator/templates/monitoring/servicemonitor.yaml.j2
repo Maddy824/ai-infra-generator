@@ -3,15 +3,15 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ svc.name }}-monitor
+  name: {{ (svc.name ~ "-monitor") | tojson }}
   labels:
-    app: {{ svc.name }}
-    project: {{ model.project_name }}
+    app: {{ svc.name | tojson }}
+    project: {{ model.project_name | tojson }}
 spec:
   selector:
     matchLabels:
-      app: {{ svc.name }}
+      app: {{ svc.name | tojson }}
   endpoints:
     - port: metrics
-      path: {{ monitoring.metrics_path }}
+      path: {{ monitoring.metrics_path | tojson }}
       interval: 30s

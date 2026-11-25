@@ -115,14 +115,18 @@ class TestDockerfiles:
         Generator(tmp_path).generate(model, target="compose")
         assert "USER" not in (tmp_path / "Dockerfile.web").read_text()
 
-    def test_existing_dockerignore_is_left_alone(self, tmp_repo_with_state: Path, sample_model):
+    @pytest.mark.parametrize("force", [False, True])
+    @pytest.mark.parametrize("previously_generated", [False, True])
+    def test_existing_dockerignore_is_left_alone(self, tmp_repo_with_state: Path, sample_model, force, previously_generated):
         ignore = tmp_repo_with_state / ".dockerignore"
-        ignore.write_text("mine\n")
+        if previously_generated:
+            Generator(tmp_repo_with_state).generate(sample_model, target="compose")
+        ignore.write_text("mine\nprivate-config/\n")
 
-        files = Generator(tmp_repo_with_state).generate(sample_model, target="compose", force=True)
+        files = Generator(tmp_repo_with_state).generate(sample_model, target="compose", force=force)
 
         assert ignore not in files
-        assert ignore.read_text() == "mine\n"
+        assert ignore.read_text() == "mine\nprivate-config/\n"
 
     def test_dockerignore_created_when_missing(self, tmp_path: Path, sample_model):
         Generator(tmp_path).generate(sample_model, target="compose")
