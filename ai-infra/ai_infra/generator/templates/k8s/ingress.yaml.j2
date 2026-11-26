@@ -3,9 +3,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ model.project_name }}-ingress
+  name: {{ (model.project_name ~ "-ingress") | tojson }}
   labels:
-    project: {{ model.project_name }}
+    project: {{ model.project_name | tojson }}
   annotations:
 {% if ca.ingress_controller == "nginx" %}
     nginx.ingress.kubernetes.io/ssl-redirect: "{{ tls }}"
@@ -24,25 +24,25 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt-prod
 {% endif %}
 spec:
-  ingressClassName: {{ "alb" if ca.ingress_controller == "alb" and ca.ingress_class_name == "nginx" else ca.ingress_class_name }}
+  ingressClassName: {{ ("alb" if ca.ingress_controller == "alb" and ca.ingress_class_name == "nginx" else ca.ingress_class_name) | tojson }}
 {% if ca.tls_enabled and ca.ingress_controller != "alb" %}
   tls:
     - hosts:
 {% for svc in app_services %}
-        - {{ svc.host }}
+        - {{ svc.host | tojson }}
 {% endfor %}
-      secretName: {{ model.project_name }}-tls
+      secretName: {{ (model.project_name ~ "-tls") | tojson }}
 {% endif %}
   rules:
 {% for svc in app_services %}
-    - host: {{ svc.host }}
+    - host: {{ svc.host | tojson }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ svc.name }}
+                name: {{ svc.name | tojson }}
                 port:
                   number: {{ svc.ports[0].container }}
 {% endfor %}

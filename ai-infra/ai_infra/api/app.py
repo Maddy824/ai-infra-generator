@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel as PydanticBaseModel
 from sse_starlette.sse import EventSourceResponse
-from starlette.concurrency import run_in_threadpool
 
 from ai_infra.generator.generator import TARGETS
 
@@ -23,12 +28,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Browsers reject ``allow_credentials`` combined with a wildcard origin, and
-# the API needs no cookies, so credentials stay off.  Restrict origins with
-# a comma-separated AI_INFRA_CORS_ORIGINS (default: any origin).
+_LOCAL_HOST = r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?"
+_LOCAL_ORIGIN = r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?"
+
+# Browser clients must be served from loopback origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.environ.get("AI_INFRA_CORS_ORIGINS", "*").split(",")],
+    allow_origin_regex=_LOCAL_ORIGIN,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,8 +43,41 @@ app.add_middleware(
 logger = logging.getLogger(__name__)
 
 
+def _loopback_client(request: Request) -> bool:
+    try:
+        return request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+    except ValueError:
+        return False
+
+
+@app.middleware("http")
+async def protect_local_api(request: Request, call_next):
+    hosts = request.headers.getlist("host")
+    if len(hosts) != 1 or not re.fullmatch(_LOCAL_HOST, hosts[0], re.IGNORECASE):
+        return JSONResponse(status_code=403, content={"detail": "Host is not allowed"})
+    # CORS alone does not prevent a browser from sending a simple request.
+    origins = request.headers.getlist("origin")
+    if request.method != "OPTIONS":
+        if origins and (len(origins) != 1 or not re.fullmatch(_LOCAL_ORIGIN, origins[0])):
+            return JSONResponse(status_code=403, content={"detail": "Origin is not allowed"})
+        if request.method == "POST" and not origins and not _loopback_client(request):
+            return JSONResponse(status_code=403, content={"detail": "Origin required for non-loopback clients"})
+    return await call_next(request)
+
+
+def _allowed_path(path: str) -> Path:
+    root = Path(os.environ.get("AI_INFRA_ALLOWED_ROOT", str(Path.cwd()))).expanduser().resolve()
+    try:
+        candidate = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid path") from None
+    if not candidate.is_relative_to(root):
+        raise HTTPException(status_code=403, detail="Path is outside the allowed root")
+    return candidate
+
+
 def _repo_dir(repo_path: str) -> Path:
-    repo = Path(repo_path)
+    repo = _allowed_path(repo_path)
     if not repo.is_dir():
         raise HTTPException(status_code=400, detail=f"Directory not found: {repo_path}")
     return repo
@@ -52,21 +91,51 @@ def _check_target(target: str) -> None:
         )
 
 
-def _stream(step: dict, work: Callable[[], Any]) -> EventSourceResponse:
-    """Stream a ``status`` event, run blocking *work* off the event loop,
-    then emit ``result`` + ``done`` -- or an ``error`` event if it fails.
-    """
+# Jobs are started only by protected POST requests. Streams observe the same
+# result on every connection, without running the operation again.
+_jobs: dict[str, tuple[dict, Future]] = {}
+_MAX_JOBS = 128
+
+
+def _run_job(future: Future, work: Callable[[], Any]) -> None:
+    try:
+        result = work()
+    except Exception as exc:
+        logger.exception("Job failed")
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        future.set_result(("error", {"status": "error", "detail": detail}))
+    else:
+        future.set_result(("result", result))
+
+
+def _start_job(background: BackgroundTasks, step: dict, work: Callable[[], Any]) -> dict:
+    # Called by async routes, so registry changes are serialized on the event loop.
+    if len(_jobs) >= _MAX_JOBS:
+        for job_id, (_, future) in list(_jobs.items()):
+            if future.done():
+                del _jobs[job_id]
+                break
+        else:
+            raise HTTPException(status_code=503, detail="Too many active jobs")
+    job_id = uuid4().hex
+    future: Future = Future()
+    _jobs[job_id] = (step, future)
+    background.add_task(_run_job, future, work)
+    return {"job_id": job_id, "stream_url": f"/api/stream/{job_id}"}
+
+
+@app.get("/api/stream/{job_id}")
+async def job_stream(job_id: str) -> EventSourceResponse:
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    step, future = _jobs[job_id]
 
     async def event_generator() -> AsyncIterator[dict]:
         yield {"event": "status", "data": json.dumps(step)}
-        try:
-            result = await run_in_threadpool(work)
-        except Exception as exc:  # noqa: BLE001 -- surfaced to the client
-            logger.exception("Streaming step %s failed", step.get("step"))
-            yield {"event": "error", "data": json.dumps({"status": "error", "detail": str(exc)})}
-            return
-        yield {"event": "result", "data": json.dumps(result)}
-        yield {"event": "done", "data": json.dumps({"status": "ok"})}
+        event, result = await asyncio.shield(asyncio.wrap_future(future))
+        yield {"event": event, "data": json.dumps(result)}
+        if event == "result":
+            yield {"event": "done", "data": json.dumps({"status": result.get("status", "ok")})}
 
     return EventSourceResponse(event_generator())
 
@@ -90,6 +159,7 @@ class FixRequest(PydanticBaseModel):
     repo_path: str
     log_path: str
     dry_run: bool = False
+    force: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -120,12 +190,10 @@ def analyze_endpoint(req: RepoRequest) -> dict:
     return {"status": "ok", "result": result}
 
 
-@app.get("/api/stream/analyze")
-def analyze_stream(repo_path: str) -> EventSourceResponse:
-    from ai_infra.analyzer.core import analyze
-
-    repo = _repo_dir(repo_path)
-    return _stream({"step": "analyzing"}, lambda: analyze(repo))
+@app.post("/api/jobs/analyze", status_code=202)
+async def analyze_job(req: RepoRequest, background: BackgroundTasks) -> dict:
+    _repo_dir(req.repo_path)
+    return _start_job(background, {"step": "analyzing"}, lambda: analyze_endpoint(req))
 
 
 # ---------------------------------------------------------------------------
@@ -158,18 +226,10 @@ def plan_endpoint(req: RepoRequest) -> dict:
     return {"status": "ok", "model": model.model_dump()}
 
 
-@app.get("/api/stream/plan")
-def plan_stream(repo_path: str) -> EventSourceResponse:
-    from ai_infra.planner.planner import Planner
-    from ai_infra.state.state_manager import StateManager
-
-    repo = _repo_dir(repo_path)
-
-    def work() -> dict:
-        analyzer_output = StateManager(repo).read_analyzer_output()
-        return Planner(repo).plan(analyzer_output).model_dump(mode="json")
-
-    return _stream({"step": "planning"}, work)
+@app.post("/api/jobs/plan", status_code=202)
+async def plan_job(req: RepoRequest, background: BackgroundTasks) -> dict:
+    _repo_dir(req.repo_path)
+    return _start_job(background, {"step": "planning"}, lambda: plan_endpoint(req))
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +262,11 @@ def generate_endpoint(req: GenerateRequest) -> dict:
     }
 
 
-@app.get("/api/stream/generate")
-def generate_stream(repo_path: str, target: str = "compose", force: bool = False) -> EventSourceResponse:
-    from ai_infra.generator.generator import Generator
-    from ai_infra.state.state_manager import StateManager
-
-    repo = _repo_dir(repo_path)
-    _check_target(target)
-
-    def work() -> dict:
-        model = StateManager(repo).read_infra_model()
-        gen = Generator(repo)
-        files = gen.generate(model, target=target, force=force)
-        return {"files": [str(f) for f in files], "skipped": [str(f) for f in gen.skipped]}
-
-    return _stream({"step": "generating", "target": target}, work)
+@app.post("/api/jobs/generate", status_code=202)
+async def generate_job(req: GenerateRequest, background: BackgroundTasks) -> dict:
+    _repo_dir(req.repo_path)
+    _check_target(req.target)
+    return _start_job(background, {"step": "generating", "target": req.target}, lambda: generate_endpoint(req))
 
 
 # ---------------------------------------------------------------------------
@@ -229,26 +279,34 @@ def fix_endpoint(req: FixRequest) -> dict:
     from ai_infra.fix.fix_loop import FixLoop
 
     repo = _repo_dir(req.repo_path)
-    log_path = Path(req.log_path)
+    log_path = _allowed_path(req.log_path)
 
     if not log_path.is_file():
         raise HTTPException(status_code=400, detail=f"Log file not found: {req.log_path}")
 
     loop = FixLoop(repo)
     try:
-        result = loop.fix(log_path, dry_run=req.dry_run)
+        result = loop.fix(log_path, dry_run=req.dry_run, force=req.force)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
 
-    return {"status": "ok", **result}
+    return result
 
 
-@app.get("/api/stream/fix")
-def fix_stream(repo_path: str, log_path: str, dry_run: bool = False) -> EventSourceResponse:
-    from ai_infra.fix.fix_loop import FixLoop
+@app.post("/api/jobs/fix", status_code=202)
+async def fix_job(req: FixRequest, background: BackgroundTasks) -> dict:
+    _repo_dir(req.repo_path)
+    if not _allowed_path(req.log_path).is_file():
+        raise HTTPException(status_code=400, detail=f"Log file not found: {req.log_path}")
+    return _start_job(background, {"step": "fixing"}, lambda: fix_endpoint(req))
 
-    repo = _repo_dir(repo_path)
-    if not Path(log_path).is_file():
-        raise HTTPException(status_code=400, detail=f"Log file not found: {log_path}")
 
-    return _stream({"step": "fixing"}, lambda: FixLoop(repo).fix(Path(log_path), dry_run=dry_run))
+def main() -> None:
+    """Start the local API server."""
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000, proxy_headers=False)
+
+
+if __name__ == "__main__":
+    main()

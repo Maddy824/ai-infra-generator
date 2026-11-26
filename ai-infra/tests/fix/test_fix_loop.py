@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ai_infra.fix.fix_loop import FixLoop, parse_logs
+from ai_infra.generator.generator import Generator
 from ai_infra.models.infra_model import (
     InfraModel,
     LiteralEnv,
@@ -106,6 +109,47 @@ class TestLogParsing:
 
 
 class TestDeterministicFix:
+    @pytest.mark.parametrize("force", [False, True])
+    def test_fix_respects_existing_and_edited_files(self, tmp_path, force):
+        model = _make_model()
+        state = StateManager(tmp_path)
+        state.init_state_dir()
+        state.write_infra_model(model)
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("# original compose\n")
+        Generator(tmp_path).generate(model, target="k8s")
+        deployment = tmp_path / "k8s/web-deployment.yaml"
+        deployment.write_text("# edited deployment\n")
+        logs = tmp_path / "build.log"
+        logs.write_text("container=web OOMKilled\n")
+
+        result = FixLoop(tmp_path).fix(logs, force=force)
+
+        assert result["changes"]
+        if force:
+            assert result["status"] == "applied"
+            assert state.read_infra_model().services[0].sizing.memory_limits == "1024Mi"
+            assert str(compose) in result["files"]
+            assert str(deployment) in result["files"]
+            assert "1024Mi" in deployment.read_text()
+            assert result["skipped"] == []
+        else:
+            assert result["status"] == "blocked"
+            assert state.read_infra_model() == model
+            assert result["files"] == []
+            assert compose.read_text() == "# original compose\n"
+            assert deployment.read_text() == "# edited deployment\n"
+            assert {str(compose), str(deployment)} <= set(result["skipped"])
+            assert not state.is_tracked(compose.name)
+            retry = FixLoop(tmp_path).fix(logs)
+            assert retry["status"] == "blocked"
+            assert retry["changes"] == result["changes"]
+            assert state.read_infra_model() == model
+            applied = FixLoop(tmp_path).fix(logs, force=True)
+            assert applied["status"] == "applied"
+            assert state.read_infra_model().services[0].sizing.memory_limits == "1024Mi"
+            assert "1024Mi" in deployment.read_text()
+
     def test_oom_doubles_memory(self, tmp_path: Path):
         model = _make_model(memory_limits="512Mi")
         state = StateManager(tmp_path)
@@ -144,7 +188,8 @@ class TestDeterministicFix:
         web = [s for s in patched.services if s.name == "web"][0]
         assert "postgres" in web.depends_on
 
-    def test_dry_run_does_not_write(self, tmp_path: Path):
+    @pytest.mark.parametrize("existing_audit", [False, True])
+    def test_dry_run_does_not_write(self, tmp_path: Path, existing_audit):
         model = _make_model(memory_limits="512Mi")
         state = StateManager(tmp_path)
         state.init_state_dir()
@@ -153,8 +198,14 @@ class TestDeterministicFix:
         log_file = tmp_path / "build.log"
         log_file.write_text("container=web OOMKilled\n", encoding="utf-8")
 
+        if existing_audit:
+            state.write_atomic("logs/fix_errors.json", "previous audit")
+            state.write_atomic("logs/fix_result.json", "previous result")
+        before = _tree_snapshot(tmp_path)
         loop = FixLoop(tmp_path)
         result = loop.fix(log_file, dry_run=True)
+        assert _tree_snapshot(tmp_path) == before
+        assert result["status"] == "dry_run"
 
         assert len(result["changes"]) > 0
         assert len(result["files"]) == 0
@@ -196,3 +247,55 @@ class TestDeterministicFix:
         assert errors_log.exists()
         result_log = tmp_path / ".ai-infra" / "logs" / "fix_result.json"
         assert result_log.exists()
+
+
+def _tree_snapshot(root):
+    return {
+        path.relative_to(root).as_posix(): (
+            path.read_bytes(), path.stat().st_mtime_ns
+        ) if path.is_file() else None
+        for path in root.rglob("*")
+    }
+
+
+def test_regeneration_failure_is_explicit_and_retry_uses_original_model(tmp_path, monkeypatch):
+    model = _make_model()
+    state = StateManager(tmp_path)
+    state.init_state_dir()
+    state.write_infra_model(model)
+    Generator(tmp_path).generate(model, target="all")
+    log = tmp_path / "crash.log"
+    log.write_text("container=web OOMKilled\ncontainer=postgres OOMKilled\n")
+    original = Path.write_text
+
+    def fail_second_deployment(path, *args, **kwargs):
+        if path.name == "postgres-deployment.yaml":
+            raise OSError("simulated write failure")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "write_text", fail_second_deployment)
+        failed = FixLoop(tmp_path).fix(log)
+    assert failed["status"] == "partial"
+    assert state.read_infra_model() == model
+    deployment = tmp_path / "k8s/web-deployment.yaml"
+    assert str(deployment) in failed["files"]
+    assert "1024Mi" in deployment.read_text()
+    retry = FixLoop(tmp_path).fix(log)
+    assert retry["status"] == "applied"
+    assert retry["changes"] == failed["changes"]
+    assert state.read_infra_model().services[0].sizing.memory_limits == "1024Mi"
+
+
+def test_fix_keeps_existing_dockerignore_even_with_force(tmp_path):
+    state = StateManager(tmp_path)
+    state.init_state_dir()
+    state.write_infra_model(_make_model())
+    ignore = tmp_path / ".dockerignore"
+    ignore.write_text("private-config/\n")
+    log = tmp_path / "crash.log"
+    log.write_text("container=web OOMKilled\n")
+    result = FixLoop(tmp_path).fix(log, force=True)
+    assert result["status"] == "applied"
+    assert str(ignore) in result["skipped"]
+    assert ignore.read_text() == "private-config/\n"

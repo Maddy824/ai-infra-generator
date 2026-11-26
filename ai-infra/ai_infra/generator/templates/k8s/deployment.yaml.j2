@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ svc.name }}
+  name: {{ svc.name | tojson }}
   labels:
-    app: {{ svc.name }}
-    project: {{ model.project_name }}
+    app: {{ svc.name | tojson }}
+    project: {{ model.project_name | tojson }}
 spec:
   replicas: {{ svc.sizing.replicas }}
 {% if svc.volumes %}
@@ -14,24 +14,24 @@ spec:
 {% endif %}
   selector:
     matchLabels:
-      app: {{ svc.name }}
+      app: {{ svc.name | tojson }}
   template:
     metadata:
       labels:
-        app: {{ svc.name }}
-        project: {{ model.project_name }}
+        app: {{ svc.name | tojson }}
+        project: {{ model.project_name | tojson }}
     spec:
 {% if svc.wait_for %}
       initContainers:
 {% for dep in svc.wait_for %}
-        - name: wait-for-{{ dep.name }}
+        - name: {{ ("wait-for-" ~ dep.name) | tojson }}
           image: busybox:1.36
           command: ['sh', '-c', 'until nc -z {{ dep.name }} {{ dep.port }}; do echo waiting for {{ dep.name }}; sleep 2; done']
 {% endfor %}
 {% endif %}
       containers:
-        - name: {{ svc.name }}
-          image: {{ svc.deploy_image }}
+        - name: {{ svc.name | tojson }}
+          image: {{ svc.deploy_image | tojson }}
 {% if svc.entrypoint and not svc.built %}
           command: ["/bin/sh", "-c", {{ svc.entrypoint | tojson }}]
 {% endif %}
@@ -39,7 +39,7 @@ spec:
           ports:
 {% for port in svc.ports %}
             - containerPort: {{ port.container }}
-              protocol: {{ port.protocol }}
+              protocol: {{ port.protocol | tojson }}
 {% endfor %}
 {% endif %}
 {% if svc.probe_port %}
@@ -56,14 +56,14 @@ spec:
 {% endif %}
           resources:
             requests:
-              cpu: {{ svc.sizing.cpu_requests }}
-              memory: {{ svc.sizing.memory_requests }}
+              cpu: {{ svc.sizing.cpu_requests | tojson }}
+              memory: {{ svc.sizing.memory_requests | tojson }}
 {% if model.capabilities.needs_gpu and svc.built %}
               nvidia.com/gpu: "1"
 {% endif %}
             limits:
-              cpu: {{ svc.sizing.cpu_limits }}
-              memory: {{ svc.sizing.memory_limits }}
+              cpu: {{ svc.sizing.cpu_limits | tojson }}
+              memory: {{ svc.sizing.memory_limits | tojson }}
 {% if model.capabilities.needs_gpu and svc.built %}
               nvidia.com/gpu: "1"
 {% endif %}
@@ -75,36 +75,36 @@ spec:
           env:
 {% for env_name, env_var in svc.env.items() %}
 {% if env_var.kind == "literal" %}
-            - name: {{ env_name }}
+            - name: {{ env_name | tojson }}
               value: {{ env_var.value | tojson }}
 {% elif env_var.kind == "ref" %}
-            - name: {{ env_name }}
+            - name: {{ env_name | tojson }}
               valueFrom:
                 configMapKeyRef:
-                  name: {{ model.project_name }}-config
-                  key: {{ env_var.ref }}
+                  name: {{ (model.project_name ~ "-config") | tojson }}
+                  key: {{ env_var.ref | tojson }}
 {% elif env_var.kind == "secret" %}
-            - name: {{ env_name }}
+            - name: {{ env_name | tojson }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ model.project_name }}-secrets
-                  key: {{ env_var.ref }}
+                  name: {{ (model.project_name ~ "-secrets") | tojson }}
+                  key: {{ env_var.ref | tojson }}
 {% endif %}
 {% endfor %}
 {% endif %}
 {% if svc.volumes %}
           volumeMounts:
 {% for vol in svc.volumes %}
-            - name: {{ vol.name }}
-              mountPath: {{ vol.mount_path }}
+            - name: {{ vol.name | tojson }}
+              mountPath: {{ vol.mount_path | tojson }}
               # A subdirectory, because fresh cloud volumes contain lost+found,
               # which makes databases refuse to initialise the mount root.
-              subPath: {{ vol.name }}
+              subPath: {{ vol.name | tojson }}
 {% endfor %}
       volumes:
 {% for vol in svc.volumes %}
-        - name: {{ vol.name }}
+        - name: {{ vol.name | tojson }}
           persistentVolumeClaim:
-            claimName: {{ vol.name }}
+            claimName: {{ vol.name | tojson }}
 {% endfor %}
 {% endif %}

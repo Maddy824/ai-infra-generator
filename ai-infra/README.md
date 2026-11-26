@@ -7,7 +7,7 @@ Generate Docker, Docker Compose, Kubernetes, Helm, Terraform, CI/CD, and monitor
 `ai-infra` is a three-phase tool:
 
 1. **Understand** — Deterministically analyze your repository to extract raw facts (language, framework, dependencies, ports).
-2. **Plan (AI)** — Use an LLM (Ollama local, OpenAI, Claude, or Gemini) to reason about raw facts + user hints and produce a validated Infra Model.
+2. **Plan** — Produce a validated Infra Model using deterministic offline defaults or a model backend with optional user hints.
 3. **Generate** — Render Jinja2 templates into Dockerfiles, docker-compose.yml, Kubernetes manifests, Helm charts, Terraform IaC, CI/CD pipelines (GitHub Actions, GitLab CI, Bitbucket, CircleCI), Prometheus/Grafana monitoring, and multi-tenant configs.
 
 ## Quick Start
@@ -27,6 +27,16 @@ pip install -e ".[dev]"
 ```
 
 ### Usage
+
+For a first run without a model backend:
+
+```bash
+ai-infra run /path/to/your/repo --offline
+```
+
+The generated configs are a starting point for review, and Secrets contain placeholders. Generation skips existing and hand-edited manifests unless you explicitly pass `--force`. The fix loop preflights protected manifests and retains the original model if regeneration is blocked or incomplete. Existing `.dockerignore` files are always preserved, even with force. Offline Compose publishes application ports on loopback only and keeps dependencies internal.
+
+For step-by-step generation with a model backend:
 
 ```bash
 # 1. Initialize the state directory
@@ -75,10 +85,12 @@ All configuration is centralized in environment variables with the `AI_INFRA_` p
 | `AI_INFRA_OPENAI_MODEL` | `gpt-4o` | OpenAI model name |
 | `AI_INFRA_OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL (Azure OpenAI, local proxies) |
 | `ANTHROPIC_API_KEY` | — | Claude API key |
-| `AI_INFRA_CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Claude model name |
+| `AI_INFRA_CLAUDE_MODEL` | `claude-opus-5-5` | Claude model name |
 | `GEMINI_API_KEY` | — | Google Gemini API key |
 | `AI_INFRA_GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model name |
-| `AI_INFRA_LLM_TIMEOUT` | `30` | LLM request timeout (seconds) |
+| `AI_INFRA_LLM_TIMEOUT` | `300` | LLM request timeout (seconds) |
+| `AI_INFRA_LLM_MAX_TOKENS` | `16000` | Max tokens per response (Claude) |
+| `AI_INFRA_CLAUDE_FALLBACKS` | `true` | Retry a declined request on the recommended fallback model |
 | `AI_INFRA_LLM_MAX_RETRIES` | `2` | Max retries on validation failure |
 
 ### Backend examples
@@ -103,7 +115,7 @@ AI_INFRA_LLM_BACKEND=openai OPENAI_API_KEY=... AI_INFRA_OPENAI_BASE_URL=https://
 
 ## User Hints
 
-Edit `.ai-infra/hints.yaml` to override AI decisions:
+Edit `.ai-infra/hints.yaml` to guide model-based planning:
 
 ```yaml
 scale: prod
@@ -118,7 +130,7 @@ monitoring: true
 tenants: [acme, globex]
 ```
 
-Hints always win over analyzer output.
+Hints guide model-based planning but are not enforced overrides; `--offline` uses analyzer output alone.
 
 ## State Directory
 
@@ -126,7 +138,7 @@ Hints always win over analyzer output.
 .ai-infra/
 ├── analyzer_output.json   # Raw facts from repo analysis
 ├── infra_model.v1.json    # Validated infrastructure model
-├── hints.yaml             # User overrides
+├── hints.yaml             # Optional user guidance
 ├── plan.md                # Human-readable plan summary
 ├── state.json             # Dirty/clean tracking for incremental runs
 └── logs/                  # Fix loop audit logs
@@ -155,15 +167,18 @@ Hints always win over analyzer output.
 Start the FastAPI backend for Web UI integration:
 
 ```bash
-uvicorn ai_infra.api.app:app --reload --port 8000
+AI_INFRA_ALLOWED_ROOT="$PWD" python -m ai_infra.api.app
 ```
+
+The server binds to `127.0.0.1:8000`, requires a localhost Host header and an allowed localhost Origin on mutating POST requests (or no Origin from loopback clients only), and rejects repository and log paths outside `AI_INFRA_ALLOWED_ROOT` (the working directory by default).
 
 Endpoints:
 - `POST /api/analyze` — Run analysis
 - `POST /api/plan` — Run planner
 - `POST /api/generate` — Generate configs
 - `POST /api/fix` — Run fix loop
-- `GET /api/stream/*` — SSE streaming variants
+- `POST /api/jobs/{analyze,plan,generate,fix}` — Start a job using the corresponding REST endpoint body; returns a stream URL
+- `GET /api/stream/{job_id}` — Read-only SSE progress and result
 - `GET /health` — Health check
 
 ## Generation Targets

@@ -1,11 +1,11 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ namespace }}-isolation
-  namespace: {{ namespace }}
+  name: {{ (namespace ~ "-isolation") | tojson }}
+  namespace: {{ namespace | tojson }}
   labels:
-    project: {{ model.project_name }}
-    tenant: {{ tenant.name }}
+    project: {{ model.project_name | tojson }}
+    tenant: {{ tenant.name | tojson }}
 spec:
   podSelector: {}
   policyTypes:
@@ -24,7 +24,7 @@ spec:
               kubernetes.io/metadata.name: default
           podSelector:
             matchLabels:
-              app: {{ shared_svc }}
+              app: {{ shared_svc | tojson }}
 {% endfor %}
 {% endif %}
   egress:
@@ -51,7 +51,7 @@ spec:
               kubernetes.io/metadata.name: default
           podSelector:
             matchLabels:
-              app: {{ shared_svc }}
+              app: {{ shared_svc | tojson }}
 {% endfor %}
 {% endif %}
     # Allow external egress (internet)

@@ -43,7 +43,7 @@ def _report_generated(files: list[Path], skipped: list[Path], target: str, repo:
         console.print(f"  → {f.relative_to(repo)}")
     if skipped:
         console.print(
-            f"[yellow]Skipped {len(skipped)} hand-edited file(s); re-run with --force to overwrite:[/yellow]"
+            f"[yellow]Skipped {len(skipped)} protected file(s); --force can overwrite regular manifests, not .dockerignore or symlinks:[/yellow]"
         )
         for f in skipped:
             console.print(f"  [yellow]![/yellow] {f.relative_to(repo)}")
@@ -114,9 +114,10 @@ def analyze(
 @app.command()
 def plan(
     repo: Path = _repo_arg(),
+    offline: bool = typer.Option(False, "--offline", help="Plan without a model backend."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Run the AI planner to produce an InfraModel."""
+    """Produce an InfraModel from repository analysis."""
     _setup_logging(verbose)
     from ai_infra.planner.planner import Planner
     from ai_infra.state.state_manager import StateManager
@@ -134,7 +135,7 @@ def plan(
 
     planner = Planner(repo)
     try:
-        model = planner.plan(analyzer_output)
+        model = planner.plan(analyzer_output, offline=offline)
         console.print(Panel(f"[green]Plan complete![/green]\nProject: {model.project_name}\nServices: {len(model.services)}"))
     except RuntimeError as exc:
         console.print(f"[red]Planning failed: {exc}[/red]")
@@ -150,7 +151,7 @@ def plan(
 def generate(
     repo: Path = _repo_arg(),
     target: str = typer.Option("compose", "--target", "-t", help="Generation target."),
-    force: bool = typer.Option(False, "--force", "-f", help="Force regeneration."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing or hand-edited infrastructure files."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Generate infrastructure files from the InfraModel."""
@@ -182,6 +183,7 @@ def fix(
     repo: Path = _repo_arg(),
     logs: Path = typer.Option(..., "--logs", "-l", help="Path to log file.", exists=True, dir_okay=False),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing or hand-edited infrastructure files."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Parse deployment logs and propose/apply fixes to the InfraModel."""
@@ -190,7 +192,7 @@ def fix(
 
     loop = FixLoop(repo)
     try:
-        result = loop.fix(logs, dry_run=dry_run)
+        result = loop.fix(logs, dry_run=dry_run, force=force)
     except RuntimeError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
@@ -201,11 +203,19 @@ def fix(
 
     if dry_run:
         console.print(Panel(f"[yellow]Dry run:[/yellow] {n_errors} error(s), {n_changes} proposed change(s)"))
+    elif result.get("status") in ("blocked", "partial"):
+        console.print(Panel(f"[red]Fix {result['status']}:[/red] original model retained; {n_files} file(s) regenerated"))
     else:
         console.print(Panel(f"[green]Fixed:[/green] {n_errors} error(s), {n_changes} change(s), {n_files} file(s) regenerated"))
 
     for change in result.get("changes", []):
         console.print(f"  {change}")
+    for path in result.get("skipped", []):
+        console.print(f"[yellow]Skipped protected output {path}.[/yellow]")
+    if result.get("detail"):
+        console.print(result["detail"])
+    if result.get("status") in ("blocked", "partial"):
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +227,8 @@ def fix(
 def run(
     repo: Path = _repo_arg(),
     target: str = typer.Option("all", "--target", "-t", help="Generation target."),
-    force: bool = typer.Option(False, "--force", "-f", help="Force regeneration."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing or hand-edited infrastructure files."),
+    offline: bool = typer.Option(False, "--offline", help="Plan without a model backend."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run the full pipeline: init -> analyze -> plan -> generate."""
@@ -245,10 +256,10 @@ def run(
     console.print(f"  Language: {result.get('language')}  Framework: {result.get('framework')}")
 
     # 3. Plan
-    console.print("[bold]Running AI planner...[/bold]")
+    console.print("[bold]Planning offline...[/bold]" if offline else "[bold]Running model planner...[/bold]")
     planner = Planner(repo)
     try:
-        model = planner.plan(result)
+        model = planner.plan(result, offline=offline)
     except RuntimeError as exc:
         console.print(f"[red]Planning failed: {exc}[/red]")
         raise typer.Exit(1) from None

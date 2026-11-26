@@ -3,15 +3,15 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: web-monitor
+  name: "web-monitor"
   labels:
-    app: web
-    project: enterprise-app
+    app: "web"
+    project: "enterprise-app"
 spec:
   selector:
     matchLabels:
-      app: web
+      app: "web"
   endpoints:
     - port: metrics
-      path: /metrics
+      path: "/metrics"
       interval: 30s

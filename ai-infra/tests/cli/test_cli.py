@@ -36,7 +36,7 @@ def test_generate_reports_skipped_hand_edits(tmp_repo_with_state: Path, sample_m
     result = runner.invoke(app, ["generate", str(tmp_repo_with_state), "--target", "compose"])
 
     assert result.exit_code == 0
-    assert "Skipped 1 hand-edited file" in result.output
+    assert "Skipped 1 protected file" in result.output
     assert "docker-compose.yml" in result.output
 
 
@@ -49,3 +49,33 @@ def test_status_lists_modified_files(tmp_repo_with_state: Path, sample_model):
 
     assert result.exit_code == 0
     assert "Modified since generation (1)" in result.output
+
+
+def test_offline_plan_and_run(fastapi_app_dir: Path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("A backend must not be called offline")
+
+    monkeypatch.setattr("ai_infra.planner.planner.Planner._call_llm", fail)
+    repo = str(fastapi_app_dir)
+    assert runner.invoke(app, ["analyze", repo]).exit_code == 0
+    result = runner.invoke(app, ["plan", repo, "--offline"])
+    assert result.exit_code == 0, result.output
+    model = StateManager(fastapi_app_dir).read_infra_model()
+    result = runner.invoke(app, ["run", repo, "--offline", "--target", "compose"])
+    assert result.exit_code == 0, result.output
+    assert StateManager(fastapi_app_dir).read_infra_model() == model
+    assert (fastapi_app_dir / "docker-compose.yml").is_file()
+
+
+def test_fix_reports_blocked_and_exits_nonzero(tmp_repo_with_state, sample_model):
+    state = StateManager(tmp_repo_with_state)
+    state.write_infra_model(sample_model)
+    Generator(tmp_repo_with_state).generate(sample_model, target="all")
+    deployment = tmp_repo_with_state / "k8s/web-deployment.yaml"
+    deployment.write_text("# custom deployment\n")
+    log = tmp_repo_with_state / "crash.log"
+    log.write_text("container=web OOMKilled\n")
+    result = runner.invoke(app, ["fix", str(tmp_repo_with_state), "--logs", str(log)])
+    assert result.exit_code == 1
+    assert "Fix blocked" in result.output
+    assert state.read_infra_model() == sample_model

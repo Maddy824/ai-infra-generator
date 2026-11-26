@@ -1,49 +1,65 @@
 # AI Infrastructure Generator
 
-A CLI tool that analyzes your repository, uses AI to plan the ideal infrastructure, and generates production-ready configs — Dockerfiles, Compose, Kubernetes manifests, Helm charts, Terraform, CI/CD pipelines, monitoring, and multi-tenant isolation.
+Generate Docker, Compose, Kubernetes and other infrastructure configs from a repository, with offline defaults or a model-backed plan.
 
-Point it at a repo. Get infrastructure.
+## 60-second quickstart
 
----
+**Requirements:** Python 3.11+, pip, and a checkout of this repository for the bundled example. No model, API key, Docker daemon, or cluster is needed for offline generation.
+
+From the repository root, create a virtual environment and install:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ./ai-infra
+```
+
+Generate configs for the tiny Flask/PostgreSQL app:
+
+```bash
+ai-infra run examples/flask-postgres --offline
+```
+
+This analyzes the app, builds a validated infrastructure model, and writes Docker, Compose and Kubernetes files next to the app. Open `examples/flask-postgres/docker-compose.yml` or `.ai-infra/plan.md` inside the example directory. Offline planning uses development defaults and does not enable cloud provisioning or CI/CD pipelines.
+
+Here is an excerpt of the actual [generated Compose file](examples/flask-postgres/generated/docker-compose.yml):
+
+```yaml
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      - postgres
+    environment:
+      PORT: "5000"
+      DATABASE_URL: "${DATABASE_URL}"
+```
+
+The [generated snapshot](examples/flask-postgres/generated/) is a copy of the offline output, not a second runnable app. Regenerate it with `python examples/regenerate.py` or compare it with fresh output using `python examples/regenerate.py --check`.
+
+**Review before deploying.** The generated configs are a starting point, not a production-readiness guarantee. Secrets contain placeholders. Offline Compose binds the application port to loopback and keeps database and cache ports internal to the Compose network. For this example, copy the generated `.env.example` to `.env` and fill in `POSTGRES_PASSWORD` and a matching `DATABASE_URL` (using `postgres` as the host, `app` as the username and database). Review startup commands, access controls, resource limits, and deployment settings for your environment. Generation does not build or deploy anything.
+
+## Switch to a model backend
+
+If you want a plan that incorporates hints or more advanced infrastructure, configure a backend (such as a running local Ollama server with the configured model available), then omit `--offline`:
+
+```bash
+AI_INFRA_LLM_BACKEND=ollama ai-infra plan examples/flask-postgres
+ai-infra generate examples/flask-postgres --target all
+```
+
+The offline step-by-step equivalent is `ai-infra analyze <repo>`, `ai-infra plan <repo> --offline`, then `ai-infra generate <repo> --target all`. Use `ai-infra run <repo> --offline` to do all three in one command.
 
 ## How It Works
 
-The tool follows a three-phase pipeline:
-
-1. **Understand** — Scans your codebase deterministically. No AI. Extracts language, framework, ports, and dependency information from files like `requirements.txt`, `package.json`, or `go.mod`.
-
-2. **Plan** — Sends the analysis + your optional hints to an LLM (Ollama runs locally by default — no API keys needed). The LLM produces a structured infrastructure plan. If the plan is invalid, it automatically retries with the validation error injected back into the prompt.
-
-3. **Generate** — Renders Jinja2 templates using the validated plan. Pure deterministic output. No LLM calls in this phase.
-
----
-
-## Quick Start
-
-**Requirements:** Python 3.11+. Optionally, [Ollama](https://ollama.ai) for local AI planning.
-
-```bash
-cd ai-infra
-pip install -e ".[dev]"
-```
-
-Then run the four commands in order:
-
-```bash
-# 1. Set up the state directory
-ai-infra init /path/to/your/repo
-
-# 2. Analyze the codebase (no AI)
-ai-infra analyze /path/to/your/repo
-
-# 3. Let AI plan the infrastructure
-ai-infra plan /path/to/your/repo
-
-# 4. Generate config files
-ai-infra generate /path/to/your/repo --target all
-```
-
-That's it. Your repo now has Dockerfiles, Compose, Kubernetes manifests, and more.
+1. **Understand** — Detects language, framework, ports and inferred dependencies from repository files.
+2. **Plan** — Builds a validated infrastructure model from the analysis, either with deterministic offline defaults or with a configured LLM and optional hints.
+3. **Generate** — Renders templates from the validated model without model calls.
 
 ---
 
@@ -51,8 +67,8 @@ That's it. Your repo now has Dockerfiles, Compose, Kubernetes manifests, and mor
 
 | Target | Output | When |
 |---|---|---|
-| `compose` | Multi-stage Dockerfiles, docker-compose.yml, `.env.example`, `.dockerignore` (only if you don't have one) | Always |
-| `k8s` | Deployments (with health probes and dependency wait), Services, Ingress, HPA, PersistentVolumeClaims, ConfigMaps, Secrets | Always |
+| `compose` | Multi-stage Dockerfiles, docker-compose.yml, `.env.example`, `.dockerignore` | When selected |
+| `k8s` | Deployments (with health probes and dependency wait), Services, Ingress, HPA, PersistentVolumeClaims, ConfigMaps, Secrets | When selected |
 | `ci` | CI/CD pipelines (GitHub Actions, GitLab CI, Bitbucket, CircleCI) | When `cicd.providers` is set |
 | `helm` | Chart.yaml, values.yaml, templates/ | When `helm.enabled` is true |
 | `iac` | Terraform main.tf for EKS / GKE / AKS | When `iac.enabled` is true |
@@ -78,7 +94,7 @@ ai-infra generate /path/to/repo --target all
 | Node.js | `package.json` | Express, Next.js, NestJS, Koa, Fastify |
 | Go | `go.mod` | Gin, Echo, Fiber, Chi, Gorilla/mux |
 
-Dependencies like `psycopg2`, `redis`, `celery`, `boto3`, and `pymongo` are automatically mapped to their corresponding infrastructure services (PostgreSQL, Redis, worker queues, S3, MongoDB).
+The analyzer infers dependencies like PostgreSQL, Redis, worker queues, object storage and MongoDB. Offline planning creates defaults for PostgreSQL, MySQL, MongoDB and Redis when inferred. It does not guess worker commands or cloud resources; use a model backend or edit the plan for those. Application commands and environment variable names are conventions that may need adjusting.
 
 ---
 
@@ -88,7 +104,7 @@ Everything is controlled through environment variables prefixed with `AI_INFRA_`
 
 ### LLM Backends
 
-The default backends is **Ollama**, which runs locally and needs no API key.
+When not using `--offline`, the default backend is **Ollama**, which runs locally and needs no API key.
 
 ```bash
 # Ollama (default — free, local)
@@ -113,6 +129,7 @@ AI_INFRA_LLM_BACKEND=gemini GEMINI_API_KEY=AI... ai-infra plan /path/to/repo
 | `AI_INFRA_OLLAMA_URL` | `http://localhost:11434` | Ollama server address |
 | `AI_INFRA_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Which Ollama model to use |
 | `AI_INFRA_OPENAI_MODEL` | `gpt-4o` | OpenAI model |
+| `AI_INFRA_OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `AI_INFRA_CLAUDE_MODEL` | `claude-opus-5-5` | Claude model |
 | `AI_INFRA_CLAUDE_FALLBACKS` | `true` | Let the Claude API retry a declined request on its recommended fallback model |
 | `AI_INFRA_GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model |
@@ -130,17 +147,18 @@ When there is more than one app service, the first one is served at `routing.dom
 
 ## Regenerating Safely
 
-ai-infra records a hash of every file it writes in `.ai-infra/state.json`. On later runs:
+ai-infra records a hash of every infrastructure file it writes in `.ai-infra/state.json`. On later runs (including `fix`):
 
-- Files whose rendered content hasn't changed are left untouched.
-- Files you have **edited by hand** since the last generation are **skipped** (and listed in the output) so your changes aren't lost. Pass `--force` to overwrite them.
+- Existing files that were never generated by the tool are skipped, even if they match the rendered output.
+- Previously generated files you have edited are also skipped; unchanged generated files can be updated when the plan changes.
+- Pass `--force` explicitly to overwrite existing or edited manifests. Existing `.dockerignore` files are always preserved, and output symlinks are never followed. Review skipped files before deploying, since they may not match the new plan.
 - `ai-infra status` lists generated files that were modified or deleted.
 
 ---
 
 ## User Hints
 
-After running `ai-infra init`, you'll find a `hints.yaml` file inside `.ai-infra/`. Edit it to steer the AI planner. Hints always override analyzer output.
+After running `ai-infra init`, you'll find a `hints.yaml` file inside `.ai-infra/`. Edit it to guide model-based planning; confirm its preferences in the resulting validated model. Offline planning uses only analyzer output and ignores hints.
 
 ```yaml
 # Scale for production
@@ -173,7 +191,7 @@ tenants:
 
 ---
 
-## Fix Loop (Self-Healing)
+## Fix Loop
 
 When a deployment fails, feed the logs back in:
 
@@ -185,7 +203,7 @@ ai-infra fix /path/to/repo --logs crash.log --dry-run
 ai-infra fix /path/to/repo --logs crash.log
 ```
 
-The fix loop classifies errors and applies targeted patches:
+The fix loop classifies errors and proposes patches to the model. It renders all enabled targets, preflights protected manifests, and saves the model only after regeneration succeeds. A blocked or partially applied fix retains the original model for retry; `--force` can overwrite regular manifests, but never an existing `.dockerignore`. Dry-run writes no files.
 
 | Error | Detection Pattern | Auto-Fix |
 |---|---|---|
@@ -193,7 +211,7 @@ The fix loop classifies errors and applies targeted patches:
 | CrashLoop | `CrashLoopBackOff` | Adds missing `depends_on` |
 | Image Pull | `ImagePullBackOff` | LLM suggests fix |
 | Build | `COPY failed`, `build failed` | LLM suggests fix |
-| Runtime | `FATAL`, `panic`, `Traceback` | LLM suggests fix |
+| Runtime | `FATAL`, `panic`, `Traceback` | Logged for review |
 
 ---
 
@@ -202,28 +220,29 @@ The fix loop classifies errors and applies targeted patches:
 For programmatic access or building a frontend:
 
 ```bash
-uvicorn ai_infra.api.app:app --reload --port 8000
+AI_INFRA_ALLOWED_ROOT="$PWD" python -m ai_infra.api.app
 ```
 
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `POST` | `/api/analyze` | Run analysis |
-| `POST` | `/api/plan` | Run AI planner |
+| `POST` | `/api/plan` | Run model planner |
 | `POST` | `/api/generate` | Generate configs |
 | `POST` | `/api/fix` | Run fix loop |
-| `GET` | `/api/stream/*` | SSE streaming variants (`status` → `result` → `done`, or an `error` event on failure) |
+| `POST` | `/api/jobs/{analyze,plan,generate,fix}` | Start a job with the same JSON body as its REST endpoint; returns a stream URL |
+| `GET` | `/api/stream/{job_id}` | Read-only SSE job updates (`status` → `result` → `done`, or `error`) |
 | `GET` | `/health` | Health check |
 
-Set `AI_INFRA_CORS_ORIGINS` to a comma-separated list of allowed origins to restrict browser access (default: any origin).
+The server binds to `127.0.0.1:8000` and requires a localhost Host header (`localhost`, `127.0.0.1`, or `[::1]`, with an optional port). Mutating POST requests require an HTTP(S) origin on one of those hosts, or no Origin from a loopback client only. The allowed repository and log-file root defaults to the server's working directory. Set `AI_INFRA_ALLOWED_ROOT` to another directory if needed. Resolved paths outside that root are rejected. This is a local development API, not an authenticated multi-user service.
 
 ---
 
 ## Testing
 
 ```bash
-cd ai-infra
-pytest                     # Run all tests
-pytest --cov=ai_infra      # With coverage
+pip install -e "./ai-infra[dev]"
+python -m pytest ai-infra/tests
+ruff check --config ai-infra/pyproject.toml ai-infra examples
 ```
 
 ---
@@ -234,7 +253,7 @@ pytest --cov=ai_infra      # With coverage
 ai-infra/
 ├── ai_infra/
 │   ├── analyzer/       # Repository analysis (language detectors)
-│   ├── planner/        # AI planning (LLM integration + prompts)
+│   ├── planner/        # Offline and model-based planning
 │   ├── generator/      # Jinja2 template rendering engine
 │   ├── fix/            # Self-healing fix loop
 │   ├── models/         # Pydantic schemas (the central contract)

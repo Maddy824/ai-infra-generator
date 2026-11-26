@@ -14,10 +14,11 @@ services:
     command: {{ svc.entrypoint | tojson }}
 {% endif %}
     restart: unless-stopped
-{% if svc.ports %}
+{% set published = svc.ports | selectattr("host") | list %}
+{% if published %}
     ports:
-{% for port in svc.ports %}
-      - "{{ port.host }}:{{ port.container }}{% if port.protocol == "UDP" %}/udp{% endif %}"
+{% for port in published %}
+      - "{% if port.host_ip %}{{ port.host_ip }}:{% endif %}{{ port.host }}:{{ port.container }}{% if port.protocol == "UDP" %}/udp{% endif %}"
 {% endfor %}
 {% endif %}
 {% if svc.depends_on %}

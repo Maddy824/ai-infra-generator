@@ -67,7 +67,8 @@ class PortMapping(BaseModel):
     """A single port mapping for a service container."""
 
     container: int = Field(..., gt=0, le=65535, description="Port inside the container.")
-    host: int = Field(..., gt=0, le=65535, description="Port exposed on the host / node.")
+    host: int | None = Field(..., gt=0, le=65535, description="Published host port, or null for internal only.")
+    host_ip: Literal["127.0.0.1"] | None = Field(default=None, description="Optional loopback-only Compose binding.")
     protocol: Literal["TCP", "UDP"] = Field(
         default="TCP",
         description="Transport protocol.",

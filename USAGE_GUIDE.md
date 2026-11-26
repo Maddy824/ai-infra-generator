@@ -16,6 +16,7 @@ This guide walks you through every feature of `ai-infra` with detailed examples,
 8. [API Server](#8-api-server)
 9. [Adding a New Language Detector](#9-adding-a-new-language-detector)
 10. [Troubleshooting](#10-troubleshooting)
+11. [Known gap: offline container startup verification](#known-gap-offline-container-startup-verification)
 
 ---
 
@@ -65,6 +66,8 @@ curl http://localhost:11434/api/tags
 ## 2. Your First Run
 
 Let's analyze a FastAPI project end-to-end.
+
+For a model-free first run, use `ai-infra run /path/to/my-fastapi-app --offline`. It uses the detector output and development defaults; the following model-based walkthrough is optional.
 
 ### Step 1: Initialize
 
@@ -119,7 +122,7 @@ ai-infra plan /path/to/my-fastapi-app
 1. Reads `analyzer_output.json` (from Step 2) and `hints.yaml`
 2. Sends both to the LLM (Ollama by default) with the full Pydantic schema
 3. LLM returns a JSON infrastructure plan
-4. Pydantic validates the response — if invalid, automatically retries up to 3 times
+4. Pydantic validates the response — if invalid, automatically retries up to 2 times by default
 5. Writes the validated model to `.ai-infra/infra_model.v1.json`
 6. Generates a human-readable summary at `.ai-infra/plan.md`
 
@@ -201,12 +204,12 @@ Generating infrastructure (target: all)
 | Argument | Default | Description |
 |---|---|---|
 | `REPO_PATH` | `.` | Path to the repository |
+| `--offline` | `false` | Build a plan from analyzer output without a model backend or hints |
 
 **Behavior:**
-- Reads `analyzer_output.json` + `hints.yaml`.
-- Calls the configured LLM backend.
-- Validates LLM output against the Pydantic InfraModel schema.
-- On validation failure: sends the error back to the LLM for automatic repair.
+- Reads `analyzer_output.json`.
+- With `--offline`, builds a deterministic development model without reading hints or calling a backend. Offline Compose publishes the app on loopback only; databases and caches remain internal.
+- Otherwise, reads `hints.yaml`, calls the configured LLM backend, and validates the response against the InfraModel schema. On validation failure, sends the error back for automatic repair.
 - Writes `infra_model.v1.json` and `plan.md`.
 
 **Requires:** `ai-infra analyze` has been run.
@@ -219,7 +222,7 @@ Generating infrastructure (target: all)
 |---|---|---|
 | `REPO_PATH` | `.` | Path to the repository |
 | `--target` | `compose` | What to generate (see table below) |
-| `--force` | `false` | Rewrite all files, including ones you edited by hand since the last generation |
+| `--force` | `false` | Explicitly overwrite existing or hand-edited manifests (never an existing `.dockerignore` or symlink) |
 
 **Available targets:**
 
@@ -244,14 +247,17 @@ Generating infrastructure (target: all)
 |---|---|---|
 | `REPO_PATH` | `.` | Path to the repository |
 | `--logs` | (required) | Path to the log file containing deployment errors |
-| `--dry-run` | `false` | Preview changes without writing to disk |
+| `--dry-run` | `false` | Preview changes without writing any files, including audit logs |
+| `--force` | `false` | Overwrite protected regular manifests, but never an existing `.dockerignore` or symlink |
 
 **Behavior:**
 - Parses the log file using regex patterns to classify errors.
 - For OOM errors: doubles memory limits automatically.
 - For CrashLoop: fixes missing `depends_on` entries.
 - For complex errors (image pull, build): calls the LLM for a fix.
-- Regenerates only affected files.
+- Renders all enabled targets and regenerates files that need writing after preflight.
+- If a manifest is protected, stops before changing outputs unless it can be overwritten with `--force`. An existing `.dockerignore` is always kept.
+- Saves the patched model only after regeneration succeeds. A blocked or partial fix reports its status, retains the original model for retry, and exits nonzero.
 
 ---
 
@@ -309,7 +315,7 @@ All settings use the `AI_INFRA_` prefix as environment variables.
 
 ## 5. User Hints
 
-After running `ai-infra init`, edit `.ai-infra/hints.yaml` to override AI decisions.
+After running `ai-infra init`, edit `.ai-infra/hints.yaml` to guide model-based planning.
 
 ### Example: Basic Customization
 
@@ -361,7 +367,7 @@ ingress_class_name: traefik
 tls_enabled: true
 ```
 
-**Rule:** Hints always win over analyzer output. If you set `scale: prod` in hints, the AI planner will always use production scaling regardless of what it otherwise would have chosen.
+**Note:** Hints are instructions included in the model-based planning prompt, not enforced overrides. Review the validated plan to confirm choices such as `scale: prod`. Offline planning ignores hints.
 
 ---
 
@@ -514,6 +520,8 @@ ai-infra fix . --logs crash.log
 #   ✔ Regenerated k8s/deployment-web.yaml
 ```
 
+The fix loop preflights protected manifests and retains the original model if regeneration is blocked or incomplete. Use `--force` only to overwrite regular manifests intentionally; existing `.dockerignore` files are always preserved.
+
 ---
 
 ## 8. API Server
@@ -522,8 +530,10 @@ For programmatic access or to build a Web UI:
 
 ```bash
 # Start the server
-uvicorn ai_infra.api.app:app --reload --port 8000
+AI_INFRA_ALLOWED_ROOT=/path/to python -m ai_infra.api.app
 ```
+
+The API binds to `127.0.0.1:8000`, requires a localhost Host header and an allowed localhost Origin on mutating POST requests (or no Origin from loopback clients only), and rejects resolved repository and log paths outside the allowed root (working directory by default).
 
 ### REST Endpoints
 
@@ -551,12 +561,17 @@ curl -X POST http://localhost:8000/api/fix \
 
 ### SSE Streaming
 
-For real-time progress updates, use the streaming endpoints:
+Start a job via POST to `/api/jobs/analyze`, `/api/jobs/plan`, `/api/jobs/generate` or `/api/jobs/fix` with the corresponding REST request body. The response contains a job ID and stream URL. Connecting or reconnecting to the stream only reads that job’s status and result.
 
 ```javascript
-const eventSource = new EventSource(
-  'http://localhost:8000/api/stream/generate?repo_path=/path/to/repo&target=all'
-);
+const response = await fetch('http://localhost:8000/api/jobs/generate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ repo_path: '/path/to/repo', target: 'all' })
+});
+if (!response.ok) throw new Error('Could not start job');
+const { stream_url } = await response.json();
+const eventSource = new EventSource('http://localhost:8000' + stream_url);
 
 eventSource.addEventListener('status', (e) => {
   console.log('Status:', JSON.parse(e.data));
@@ -576,7 +591,7 @@ eventSource.addEventListener('error', (e) => {
 });
 ```
 
-Pass `&force=true` to `/api/stream/generate` to overwrite files edited by hand.
+Include `"force": true` in a generate or fix POST body to overwrite regular manifests intentionally. Job results are kept in memory until evicted or the server restarts. Fix results report `applied`, `blocked`, `partial`, `dry_run` or `no_changes`.
 
 ---
 
@@ -590,15 +605,16 @@ Adding support for a new language (e.g., Ruby, Rust, Java) requires exactly **on
 # ai_infra/analyzer/detectors/ruby.py
 
 from pathlib import Path
-from ai_infra.analyzer.detectors.base import BaseDetector
+from ai_infra.analyzer.detectors.base import BaseDetector, repo_file, safe_read
 
 class RubyDetector(BaseDetector):
     def matches(self, repo_path: Path) -> bool:
-        return (repo_path / "Gemfile").is_file()
+        return repo_file(repo_path, repo_path / "Gemfile")
 
     def detect(self, repo_path: Path) -> dict | None:
         if not self.matches(repo_path):
             return None
+        # Read repository inputs with safe_read(repo_path, path).
         # Parse Gemfile, detect Rails/Sinatra, find ports, etc.
         return {
             "language": "ruby",
@@ -647,7 +663,7 @@ The LLM is struggling to produce valid JSON. Try:
 
 ### Generated files are not changing
 
-The generator skips files whose content is unchanged, and also skips files you edited by hand since the last generation (they are listed as "Skipped" in the output, and `ai-infra status` shows them). Use `--force` to overwrite them:
+The generator skips identical output and protects files it did not create or that you edited since generation. Protected files are listed as "Skipped" in the output. Use `--force` to overwrite regular manifests intentionally (existing `.dockerignore` files and symlinks remain protected):
 
 ```bash
 ai-infra generate . --target all --force
@@ -661,3 +677,8 @@ Make sure you installed in editable mode from the `ai-infra/` directory:
 cd ai-infra
 pip install -e ".[dev]"
 ```
+
+
+## Known gap: offline container startup verification
+
+Offline tests verify the generated startup commands and configuration, not actual container startup. Minimal FastAPI installations may lack Uvicorn, and NestJS start scripts may require development dependencies omitted from the runtime image. Check the project's dependencies and start command, build and start the containers, and verify readiness before deploying. Representative container startup tests remain a known gap.

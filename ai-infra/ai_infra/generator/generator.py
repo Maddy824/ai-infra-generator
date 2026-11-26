@@ -184,133 +184,135 @@ class Generator:
             lstrip_blocks=True,
         )
         self._state = StateManager(self.repo_path)
-        self._force = False
-        # Files left alone because they were edited by hand since the last
-        # generation.  Populated by ``generate()``; pass ``force=True`` to
-        # overwrite them.
         self.skipped: list[Path] = []
+        self.written: list[Path] = []
+        self.blocked: list[Path] = []
+        self._outputs: dict[Path, str] = {}
 
-    def _write_if_changed(
-        self, path: Path, content: str, force: bool = False, create_only: bool = False,
-    ) -> bool:
-        """Write *content* to *path* only if it differs from what's on disk.
-
-        When *force* is ``False`` the write is skipped (and ``False`` returned)
-        if the file already has identical content, or if it was hand-edited
-        since ai-infra last generated it -- in which case it is recorded in
-        ``self.skipped``.  Otherwise the file is written, its state entry is
-        marked clean, and ``True`` is returned.
-
-        With *create_only*, a file that already exists and was not written by
-        ai-infra (e.g. the project's own ``.dockerignore``) is never touched.
-        """
-        rel = path.relative_to(self.repo_path).as_posix()
-        if create_only and path.exists() and not (
-            self._state.exists() and self._state.is_tracked(rel)
-        ):
-            return False
-        if not force and path.exists():
-            existing = path.read_text(encoding="utf-8")
-            if existing == content:
-                return False
-            if self._state.exists() and self._state.was_modified(rel):
-                logger.warning(
-                    "Skipping %s: modified since last generation (use --force to overwrite).",
-                    rel,
-                )
-                self.skipped.append(path)
-                return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        # Track the file in state.json for incremental regeneration.
+    def _protected(self, path: Path, force: bool) -> bool:
+        """Check ownership and path safety before any output is written."""
         try:
-            if self._state.exists():
-                self._state.mark_clean(rel)
-        except Exception:  # noqa: BLE001
-            logger.debug("Could not record %s in state.json", rel, exc_info=True)
-        return True
+            if path.resolve() != path or not path.is_relative_to(self.repo_path):
+                return True
+        except (OSError, RuntimeError):
+            return True
+        if any(parent.exists() and not parent.is_dir() for parent in path.parents):
+            return True
+        if not path.exists():
+            return False
+        if not path.is_file():
+            return True
+        rel = path.relative_to(self.repo_path).as_posix()
+        if force and rel != ".dockerignore":
+            return False
+        # An existing dockerignore is never overwritten, even with force.
+        return not self._state.is_tracked(rel) or self._state.was_modified(rel) or rel == ".dockerignore"
+
+    def _render(self, model: InfraModel, target: str) -> dict[Path, str]:
+        """Render all requested outputs before modifying the filesystem."""
+        if target not in TARGETS:
+            raise ValueError(
+                f"Invalid target '{target}'. Choose from: {', '.join(TARGETS)}"
+            )
+        self._outputs = {}
+        if target in ("compose", "all"):
+            self._generate_dockerfiles(model)
+            self._generate_compose(model)
+        if target in ("k8s", "all"):
+            self._generate_k8s(model)
+        if target in ("ci", "all"):
+            self._generate_ci(model)
+        if target in ("helm", "all") and model.helm.enabled:
+            self._generate_helm(model)
+        if target in ("iac", "all") and model.iac.enabled:
+            self._generate_iac(model)
+        if target in ("monitoring", "all") and model.monitoring.enabled:
+            self._generate_monitoring(model)
+        if target in ("tenancy", "all") and model.multi_tenancy.enabled:
+            self._generate_tenancy(model)
+        return self._outputs
 
     def generate(
         self,
         model: InfraModel,
         target: str = "compose",
         force: bool = False,
+        *,
+        require_all: bool = False,
     ) -> list[Path]:
-        """Generate infrastructure files for the given target.
+        """Render and write outputs, respecting existing file ownership.
 
-        When *force* is ``False``, files whose content has not changed since
-        the last generation are skipped (incremental regeneration).
-
-        Returns a list of paths to the files that were actually written.
-        Raises ``ValueError`` for an unknown *target*.
+        With require_all, preflight every output and stop before writes if
+        any manifest is protected. An existing .dockerignore is always kept.
         """
-        if target not in TARGETS:
-            raise ValueError(
-                f"Invalid target '{target}'. Choose from: {', '.join(TARGETS)}"
-            )
-        self._force = force
         self.skipped = []
-        generated: list[Path] = []
+        self.written = []
+        self.blocked = []
+        outputs = self._render(model, target)
+        pending = {}
+        for path, content in outputs.items():
+            protected = self._protected(path, force)
+            is_dockerignore = path == self.repo_path / ".dockerignore"
+            # An unchanged, tracked dockerignore needs no regeneration.
+            if (is_dockerignore and not path.is_symlink() and path.is_file()
+                    and self._state.is_tracked(".dockerignore")
+                    and path.read_bytes() == content.encode("utf-8")):
+                continue
+            if protected:
+                self.skipped.append(path)
+                logger.warning("Skipping protected output %s.", path)
+                if not is_dockerignore:
+                    self.blocked.append(path)
+                continue
+            rel = path.relative_to(self.repo_path).as_posix()
+            if (path.is_file() and path.read_bytes() == content.encode("utf-8")
+                    and self._state.is_tracked(rel) and not self._state.was_modified(rel)):
+                continue
+            pending[path] = content
+        if require_all and self.blocked:
+            return []
 
-        if target in ("compose", "all"):
-            generated.extend(self._generate_dockerfiles(model))
-            generated.extend(self._generate_compose(model))
-
-        if target in ("k8s", "all"):
-            generated.extend(self._generate_k8s(model))
-
-        if target in ("ci", "all"):
-            generated.extend(self._generate_ci(model))
-
-        if target in ("helm", "all"):
-            if model.helm.enabled:
-                generated.extend(self._generate_helm(model))
-
-        if target in ("iac", "all"):
-            if model.iac.enabled:
-                generated.extend(self._generate_iac(model))
-
-        if target in ("monitoring", "all"):
-            if model.monitoring.enabled:
-                generated.extend(self._generate_monitoring(model))
-
-        if target in ("tenancy", "all"):
-            if model.multi_tenancy.enabled:
-                generated.extend(self._generate_tenancy(model))
-
-        return generated
+        self._state.init_state_dir()
+        for path, content in pending.items():
+            # Recheck in case a file changed after preflight.
+            if self._protected(path, force):
+                self.skipped.append(path)
+                if path != self.repo_path / ".dockerignore":
+                    self.blocked.append(path)
+                    if require_all:
+                        break
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            self.written.append(path)
+            self._state.mark_clean(path.relative_to(self.repo_path).as_posix())
+        return self.written
 
     # -- Dockerfiles -------------------------------------------------------
 
-    def _generate_dockerfiles(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_dockerfiles(self, model: InfraModel) -> None:
         for svc in model.services:
             if svc.type in ("database", "cache"):
                 continue
             ctx = self._service_context(model, svc)
             tmpl = self.env.get_template("docker/Dockerfile.j2")
             path = self.repo_path / f"Dockerfile.{svc.name}"
-            if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(**ctx)
 
         # Keep VCS data, local envs, secrets and build output out of the
-        # build context -- but never clobber the project's own ignore file.
+        # build context. Always preserve an existing project ignore file.
         if any(_is_built(s) for s in model.services):
             tmpl = self.env.get_template("docker/dockerignore.j2")
             path = self.repo_path / ".dockerignore"
-            if self._write_if_changed(path, tmpl.render(), self._force, create_only=True):
-                generated.append(path)
-        return generated
+            self._outputs[path] = tmpl.render()
 
     # -- Docker Compose ----------------------------------------------------
 
-    def _generate_compose(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_compose(self, model: InfraModel) -> None:
         model_data = _wrap(_model_data(model))
         tmpl = self.env.get_template("compose/docker-compose.yml.j2")
         path = self.repo_path / "docker-compose.yml"
-        if self._write_if_changed(path, tmpl.render(model=model_data), self._force):
-            generated.append(path)
+        self._outputs[path] = tmpl.render(model=model_data)
 
         # Compose interpolates ref/secret env vars from .env -- document
         # which ones are needed.
@@ -318,16 +320,12 @@ class Generator:
         if env_refs:
             tmpl = self.env.get_template("compose/env.example.j2")
             path = self.repo_path / ".env.example"
-            if self._write_if_changed(path, tmpl.render(env_refs=env_refs), self._force):
-                generated.append(path)
-        return generated
+            self._outputs[path] = tmpl.render(env_refs=env_refs)
 
     # -- Kubernetes --------------------------------------------------------
 
-    def _generate_k8s(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_k8s(self, model: InfraModel) -> None:
         k8s_dir = self.repo_path / "k8s"
-        k8s_dir.mkdir(parents=True, exist_ok=True)
 
         model_data = _wrap(_model_data(model))
 
@@ -337,22 +335,19 @@ class Generator:
             # Deployment
             tmpl = self.env.get_template("k8s/deployment.yaml.j2")
             path = k8s_dir / f"{svc.name}-deployment.yaml"
-            if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(**ctx)
 
             # Service (if ports)
             if svc.ports:
                 tmpl = self.env.get_template("k8s/service.yaml.j2")
                 path = k8s_dir / f"{svc.name}-service.yaml"
-                if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                    generated.append(path)
+                self._outputs[path] = tmpl.render(**ctx)
 
             # HPA (if prod or heavy scale)
             if svc.sizing.scale in ("prod", "heavy") and svc.type == "app":
                 tmpl = self.env.get_template("k8s/hpa.yaml.j2")
                 path = k8s_dir / f"{svc.name}-hpa.yaml"
-                if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                    generated.append(path)
+                self._outputs[path] = tmpl.render(**ctx)
 
         # Ingress (for app services).  The first app is served at the root
         # domain; any others get a subdomain each, so no app has its paths
@@ -367,8 +362,7 @@ class Generator:
                 routes.append(_wrap(data))
             tmpl = self.env.get_template("k8s/ingress.yaml.j2")
             path = k8s_dir / "ingress.yaml"
-            if self._write_if_changed(path, tmpl.render(model=model_data, app_services=routes), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(model=model_data, app_services=routes)
 
         # PersistentVolumeClaims referenced by the deployments' volumes
         claims: dict[str, str] = {}
@@ -378,31 +372,25 @@ class Generator:
         for claim, size in claims.items():
             tmpl = self.env.get_template("k8s/pvc.yaml.j2")
             path = k8s_dir / f"{claim}-pvc.yaml"
-            if self._write_if_changed(path, tmpl.render(model=model_data, claim=claim, size=size), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(model=model_data, claim=claim, size=size)
 
         # ConfigMap (for ref envs)
         ref_envs = _env_refs(model, ("ref",))
         if ref_envs:
             tmpl = self.env.get_template("k8s/configmap.yaml.j2")
             path = k8s_dir / "configmap.yaml"
-            if self._write_if_changed(path, tmpl.render(model=model_data, ref_envs=ref_envs), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(model=model_data, ref_envs=ref_envs)
 
         # Secret placeholder (for secret envs)
         secret_envs = _env_refs(model, ("secret",))
         if secret_envs:
             tmpl = self.env.get_template("k8s/secret.yaml.j2")
             path = k8s_dir / "secret.yaml"
-            if self._write_if_changed(path, tmpl.render(model=model_data, secret_envs=secret_envs), self._force):
-                generated.append(path)
-
-        return generated
+            self._outputs[path] = tmpl.render(model=model_data, secret_envs=secret_envs)
 
     # -- CI/CD -------------------------------------------------------------
 
-    def _generate_ci(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_ci(self, model: InfraModel) -> None:
         cicd = model.cicd
         model_data = _wrap(_model_data(model))
 
@@ -428,70 +416,57 @@ class Generator:
             tmpl = self.env.get_template(template_name)
             content = tmpl.render(**ctx)
             path = self.repo_path / output_path
-            if self._write_if_changed(path, content, self._force):
-                generated.append(path)
-
-        return generated
+            self._outputs[path] = content
 
     # -- Helm charts -------------------------------------------------------
 
-    def _generate_helm(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_helm(self, model: InfraModel) -> None:
         helm = model.helm
         chart_name = helm.chart_name or model.project_name
         chart_dir = self.repo_path / "helm" / chart_name
         templates_dir = chart_dir / "templates"
-        templates_dir.mkdir(parents=True, exist_ok=True)
 
         model_data = _wrap(_model_data(model))
 
         # Chart.yaml
         tmpl = self.env.get_template("helm/Chart.yaml.j2")
         path = chart_dir / "Chart.yaml"
-        if self._write_if_changed(path, tmpl.render(
+        self._outputs[path] = tmpl.render(
             chart_name=chart_name,
             chart_version=helm.chart_version,
             app_version=helm.app_version,
             model=model_data,
-        ), self._force):
-            generated.append(path)
+        )
 
         # values.yaml
         tmpl = self.env.get_template("helm/values.yaml.j2")
         path = chart_dir / "values.yaml"
-        if self._write_if_changed(path, tmpl.render(model=model_data, helm=_wrap(helm.model_dump())), self._force):
-            generated.append(path)
+        self._outputs[path] = tmpl.render(model=model_data, helm=_wrap(helm.model_dump()))
 
         # templates/deployment.yaml
         tmpl = self.env.get_template("helm/templates/deployment.yaml.j2")
         path = templates_dir / "deployment.yaml"
-        if self._write_if_changed(path, tmpl.render(model=model_data), self._force):
-            generated.append(path)
+        self._outputs[path] = tmpl.render(model=model_data)
 
         # templates/service.yaml
         tmpl = self.env.get_template("helm/templates/service.yaml.j2")
         path = templates_dir / "service.yaml"
-        if self._write_if_changed(path, tmpl.render(model=model_data), self._force):
-            generated.append(path)
+        self._outputs[path] = tmpl.render(model=model_data)
 
         # templates/ingress.yaml
         tmpl = self.env.get_template("helm/templates/ingress.yaml.j2")
         path = templates_dir / "ingress.yaml"
-        if self._write_if_changed(path, tmpl.render(model=model_data), self._force):
-            generated.append(path)
-
-        return generated
+        self._outputs[path] = tmpl.render(model=model_data)
 
     # -- IaC / Terraform ---------------------------------------------------
 
-    def _generate_iac(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_iac(self, model: InfraModel) -> None:
         iac = model.iac
         model_data = _wrap(_model_data(model))
 
         if iac.tool != "terraform":
             logger.warning("IaC tool '%s' not yet supported; only 'terraform' is implemented.", iac.tool)
-            return generated
+            return
 
         provider = iac.cloud_provider
         template_path = f"iac/terraform/{provider}/main.tf.j2"
@@ -500,28 +475,22 @@ class Generator:
             tmpl = self.env.get_template(template_path)
         except TemplateNotFound:
             logger.warning("No Terraform template for provider '%s'.", provider)
-            return generated
+            return
 
         tf_dir = self.repo_path / "terraform"
-        tf_dir.mkdir(parents=True, exist_ok=True)
 
         path = tf_dir / "main.tf"
-        if self._write_if_changed(path, tmpl.render(
+        self._outputs[path] = tmpl.render(
             model=model_data,
             iac=_wrap(iac.model_dump()),
-        ), self._force):
-            generated.append(path)
-
-        return generated
+        )
 
     # -- Monitoring --------------------------------------------------------
 
-    def _generate_monitoring(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_monitoring(self, model: InfraModel) -> None:
         mon = model.monitoring
         model_data = _wrap(_model_data(model))
         mon_dir = self.repo_path / "monitoring"
-        mon_dir.mkdir(parents=True, exist_ok=True)
 
         app_services = [s for s in model.services if s.type in ("app", "worker")]
 
@@ -534,8 +503,7 @@ class Generator:
                     "monitoring": _wrap(mon.model_dump()),
                 }
                 path = mon_dir / f"{svc.name}-servicemonitor.yaml"
-                if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                    generated.append(path)
+                self._outputs[path] = tmpl.render(**ctx)
 
         if mon.alerting:
             tmpl = self.env.get_template("monitoring/alerting-rules.yaml.j2")
@@ -546,8 +514,7 @@ class Generator:
                 "thresholds": _wrap(mon.alert_thresholds),
             }
             path = mon_dir / "alerting-rules.yaml"
-            if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(**ctx)
 
         if mon.grafana:
             tmpl = self.env.get_template("monitoring/grafana-dashboard.json.j2")
@@ -558,15 +525,11 @@ class Generator:
                 "thresholds": _wrap(mon.alert_thresholds),
             }
             path = mon_dir / "grafana-dashboard.json"
-            if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                generated.append(path)
-
-        return generated
+            self._outputs[path] = tmpl.render(**ctx)
 
     # -- Multi-tenancy -----------------------------------------------------
 
-    def _generate_tenancy(self, model: InfraModel) -> list[Path]:
-        generated: list[Path] = []
+    def _generate_tenancy(self, model: InfraModel) -> None:
         mt = model.multi_tenancy
         model_data = _wrap(_model_data(model))
 
@@ -574,7 +537,6 @@ class Generator:
             ns = tenant.namespace or tenant.name
             tenant_data = _wrap(tenant.model_dump())
             tenant_dir = self.repo_path / "k8s" / "tenants" / ns
-            tenant_dir.mkdir(parents=True, exist_ok=True)
 
             ctx = {
                 "model": model_data,
@@ -586,23 +548,18 @@ class Generator:
             # Namespace
             tmpl = self.env.get_template("tenancy/namespace.yaml.j2")
             path = tenant_dir / "namespace.yaml"
-            if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(**ctx)
 
             # ResourceQuota
             tmpl = self.env.get_template("tenancy/resource-quota.yaml.j2")
             path = tenant_dir / "resource-quota.yaml"
-            if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                generated.append(path)
+            self._outputs[path] = tmpl.render(**ctx)
 
             # NetworkPolicy
             if mt.network_policies:
                 tmpl = self.env.get_template("tenancy/network-policy.yaml.j2")
                 path = tenant_dir / "network-policy.yaml"
-                if self._write_if_changed(path, tmpl.render(**ctx), self._force):
-                    generated.append(path)
-
-        return generated
+                self._outputs[path] = tmpl.render(**ctx)
 
     # -- Helpers -----------------------------------------------------------
 

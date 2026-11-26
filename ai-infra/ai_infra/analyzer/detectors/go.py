@@ -8,6 +8,8 @@ from pathlib import Path
 from ai_infra.analyzer.detectors.base import (
     BaseDetector,
     check_existing_infra,
+    contained_path,
+    repo_file,
     safe_read,
 )
 
@@ -39,12 +41,12 @@ _PORT_PATTERNS: list[re.Pattern[str]] = [
 
 class GoDetector(BaseDetector):
     def matches(self, repo_path: Path) -> bool:
-        return (repo_path / "go.mod").is_file()
+        return repo_file(repo_path, repo_path / "go.mod")
 
     def detect(self, repo_path: Path) -> dict | None:
         if not self.matches(repo_path):
             return None
-        go_mod = safe_read(repo_path / "go.mod")
+        go_mod = safe_read(repo_path, repo_path / "go.mod")
         if go_mod is None:
             return None
         module_name, go_version = self._parse_go_mod_header(go_mod)
@@ -114,15 +116,15 @@ class GoDetector(BaseDetector):
 
     @staticmethod
     def _detect_entrypoint(repo_path: Path) -> str | None:
-        if (repo_path / "main.go").is_file():
+        if repo_file(repo_path, repo_path / "main.go"):
             return "main.go"
         cmd_dir = repo_path / "cmd"
-        if cmd_dir.is_dir():
+        if contained_path(repo_path, cmd_dir) is not None and cmd_dir.is_dir():
             try:
                 for sub in sorted(cmd_dir.iterdir()):
-                    if sub.is_dir():
+                    if contained_path(repo_path, sub) is not None and sub.is_dir():
                         main_go = sub / "main.go"
-                        if main_go.is_file():
+                        if repo_file(repo_path, main_go):
                             return str(main_go.relative_to(repo_path))
             except OSError:
                 pass
@@ -132,7 +134,7 @@ class GoDetector(BaseDetector):
     def _detect_port(repo_path: Path, entrypoint: str | None) -> int | None:
         if entrypoint is None:
             return None
-        content = safe_read(repo_path / entrypoint)
+        content = safe_read(repo_path, repo_path / entrypoint)
         if content is None:
             return None
         for pat in _PORT_PATTERNS:

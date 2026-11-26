@@ -9,6 +9,7 @@ from pathlib import Path
 from ai_infra.analyzer.detectors.base import (
     BaseDetector,
     check_existing_infra,
+    repo_file,
     safe_read,
 )
 
@@ -51,7 +52,7 @@ _PORT_PATTERNS: list[re.Pattern[str]] = [
 
 class NodeDetector(BaseDetector):
     def matches(self, repo_path: Path) -> bool:
-        return (repo_path / "package.json").is_file()
+        return repo_file(repo_path, repo_path / "package.json")
 
     def detect(self, repo_path: Path) -> dict | None:
         if not self.matches(repo_path):
@@ -77,7 +78,7 @@ class NodeDetector(BaseDetector):
 
     @staticmethod
     def _parse_package_json(repo_path: Path) -> dict | None:
-        content = safe_read(repo_path / "package.json")
+        content = safe_read(repo_path, repo_path / "package.json")
         if content is None:
             return None
         try:
@@ -104,10 +105,10 @@ class NodeDetector(BaseDetector):
     @staticmethod
     def _detect_entrypoint(repo_path: Path, pkg: dict) -> str | None:
         main = pkg.get("main")
-        if isinstance(main, str) and (repo_path / main).is_file():
+        if isinstance(main, str) and not Path(main).is_absolute() and repo_file(repo_path, repo_path / main):
             return main
         for candidate in _ENTRYPOINT_CANDIDATES:
-            if (repo_path / candidate).is_file():
+            if repo_file(repo_path, repo_path / candidate):
                 return candidate
         return None
 
@@ -115,7 +116,7 @@ class NodeDetector(BaseDetector):
     def _detect_port(repo_path: Path, entrypoint: str | None) -> int | None:
         if entrypoint is None:
             return None
-        content = safe_read(repo_path / entrypoint)
+        content = safe_read(repo_path, repo_path / entrypoint)
         if content is None:
             return None
         for pat in _PORT_PATTERNS:

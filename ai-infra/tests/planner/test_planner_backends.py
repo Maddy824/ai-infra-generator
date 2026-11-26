@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from ai_infra.config.settings import settings
+from ai_infra.config.settings import AiInfraSettings, settings
 from ai_infra.planner.planner import Planner
 
 
@@ -130,3 +132,18 @@ class TestTransportErrors:
         monkeypatch.setattr(httpx, "post", _Recorder(exc=httpx.ReadTimeout("slow")))
         with pytest.raises(RuntimeError, match="timed out"):
             planner._call_ollama("sys", "user")
+
+
+@pytest.mark.parametrize("document", ["README.md", "USAGE_GUIDE.md", "ai-infra/README.md"])
+def test_documented_backend_defaults_match_settings(document):
+    root = Path(__file__).resolve().parents[3]
+    content = (root / document).read_text()
+    fields = AiInfraSettings.model_fields
+    for field in fields:
+        if not (field.startswith("LLM_") or field.endswith(("_MODEL", "_FALLBACKS", "_BASE_URL", "_URL"))):
+            continue
+        default = fields[field].default
+        expected = str(default).lower() if isinstance(default, bool) else str(default)
+        match = re.search(rf"^\| `AI_INFRA_{field}` \| `([^`]+)`", content, re.MULTILINE)
+        assert match is not None, f"{field} default missing from {document}"
+        assert match.group(1) == expected
