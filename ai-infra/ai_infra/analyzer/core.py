@@ -94,7 +94,7 @@ def _merge_results(results: list[dict]) -> dict:
 def analyze(repo_path: Path) -> dict:
     repo_path = Path(repo_path).resolve()
     detectors = _discover_detectors()
-    logger.info("Discovered %d detector(s): %s", len(detectors), [type(d).__name__ for d in detectors])
+    logger.debug("Discovered %d detector(s): %s", len(detectors), [type(d).__name__ for d in detectors])
     results: list[dict] = []
     for detector in detectors:
         try:
@@ -107,7 +107,7 @@ def analyze(repo_path: Path) -> dict:
             result = detector.detect(repo_path)
             if result is not None:
                 results.append(result)
-                logger.info("Detector %s produced a result", type(detector).__name__)
+                logger.debug("Detector %s produced a result", type(detector).__name__)
         except Exception:
             logger.warning("Detector %s.detect() raised an exception", type(detector).__name__, exc_info=True)
     if results:
@@ -128,5 +128,5 @@ def analyze(repo_path: Path) -> dict:
     state = StateManager(repo_path)
     state.init_state_dir()
     state.write_analyzer_output(merged)
-    logger.info("Wrote analyzer output to %s", state.state_dir / "analyzer_output.json")
+    logger.debug("Wrote analyzer output to %s", state.state_dir / "analyzer_output.json")
     return merged

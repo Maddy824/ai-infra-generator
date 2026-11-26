@@ -1,14 +1,18 @@
 # AI Infrastructure Generator
 
+![ai-infra run on the bundled Flask and PostgreSQL example: it detects Python and Flask, then writes a Dockerfile, docker-compose.yml, .env.example and seven Kubernetes manifests](.github/assets/demo.gif)
+
 Generate Docker, Compose, Kubernetes and other infrastructure configs from a repository, with offline defaults or a model-backed plan.
 
 ## 60-second quickstart
 
 **Requirements:** Python 3.11+, pip, and a checkout of this repository for the bundled example. No model, API key, Docker daemon, or cluster is needed for offline generation.
 
-From the repository root, create a virtual environment and install:
+Clone the repository, then create a virtual environment and install:
 
 ```bash
+git clone https://github.com/Maddy824/ai-infra-generator.git
+cd ai-infra-generator
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ./ai-infra
@@ -43,6 +47,17 @@ services:
 The [generated snapshot](examples/flask-postgres/generated/) is a copy of the offline output, not a second runnable app. Regenerate it with `python examples/regenerate.py` or compare it with fresh output using `python examples/regenerate.py --check`.
 
 **Review before deploying.** The generated configs are a starting point, not a production-readiness guarantee. Secrets contain placeholders. Offline Compose binds the application port to loopback and keeps database and cache ports internal to the Compose network. For this example, copy the generated `.env.example` to `.env` and fill in `POSTGRES_PASSWORD` and a matching `DATABASE_URL` (using `postgres` as the host, `app` as the username and database). Review startup commands, access controls, resource limits, and deployment settings for your environment. Generation does not build or deploy anything.
+
+## Use it on your own project
+
+You can install the command without cloning (Python 3.11+ and git):
+
+```bash
+pip install "git+https://github.com/Maddy824/ai-infra-generator@v0.1.0#subdirectory=ai-infra"
+ai-infra run path/to/your-repo --offline
+```
+
+Files are written into that repository, next to its code. Files you already have, or have edited since generating, are skipped unless you pass `--force` (see [Regenerating Safely](#regenerating-safely)). Use `--target compose` or `--target k8s` to generate only part of the set.
 
 ## Switch to a model backend
 
